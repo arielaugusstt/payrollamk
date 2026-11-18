@@ -4,60 +4,44 @@ namespace Database\Seeders;
 
 use App\Models\Spg;
 use Illuminate\Database\Seeder;
-use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Schema;
 
 class SpgSeeder extends Seeder
 {
     /**
      * Run the database seeds.
-     * Master SPGs matching the company's official roster.
+     * Exact 23 Distinct Master SPGs.
      */
     public function run(): void
     {
-        DB::statement('PRAGMA foreign_keys = OFF;');
+        Schema::disableForeignKeyConstraints();
         Spg::truncate();
-        DB::statement('PRAGMA foreign_keys = ON;');
+        Schema::enableForeignKeyConstraints();
 
         $spgNames = [
-            'AINI',
+            'PITRI',
+            'FITRI',
             'MEGA',
             'MEGHA',
-            'ZILDA',
             'DWI',
-            'SHELA',
-            'DINNI',
-            'MAY',
-            'DESI',
             'DWIE',
-            'IDA',
-            'LINA',
             'JIHAN',
-            'KARTIKA',
-            'AJENG',
-            'PITRI',
-            'FEBRI',
+            'TRI',
+            'YANI',
             'TINA',
-            'PIPIT',
-            'UMAR',
+            'ZILDA',
             'NADILA',
             'WAHYU',
-            'APRIL',
-            'FITRI',
-            'ALIF',
-            'NOVI',
-            'ANGEL',
-            'NOFITA',
-            'TRI',
+            'DINNI',
+            'LINA',
+            'UMAR',
+            'SHELA',
+            'IDA',
             'IIN',
-            'NIKMA',
-            'YANI',
-            'REFI',
             'NANA',
-            'EKA',
-            'ROMLAH',
-            'YUYUN',
+            'NOFITA',
+            'KARTIKA',
             'PUJI',
-            'SARI',
         ];
 
         foreach ($spgNames as $name) {

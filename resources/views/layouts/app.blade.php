@@ -50,6 +50,14 @@
                             Task Hub (Workspace)
                         </a>
 
+                        <a href="{{ route('bank-data.index') }}" 
+                           class="px-3.5 py-2 rounded-lg text-sm font-medium transition-colors flex items-center gap-2 {{ request()->routeIs('bank-data.*') ? 'bg-orange-600 text-white shadow-sm' : 'text-slate-300 hover:text-white hover:bg-slate-800' }}">
+                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 7v10c0 2.21 3.582 4 8 4s8-1.79 8-4V7M4 7c0 2.21 3.582 4 8 4s8-1.79 8-4M4 7c0-2.21 3.582-4 8-4s8 1.79 8 4m0 5c0 2.21-3.582 4-8 4s-8-1.79-8-4"/>
+                            </svg>
+                            Bank Data Bulanan (Presensi & Omzet)
+                        </a>
+
                         <a href="{{ route('dashboard.index') }}" 
                            class="px-3.5 py-2 rounded-lg text-sm font-medium transition-colors flex items-center gap-2 {{ request()->routeIs('dashboard.*') ? 'bg-orange-600 text-white shadow-sm' : 'text-slate-300 hover:text-white hover:bg-slate-800' }}">
                             <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">

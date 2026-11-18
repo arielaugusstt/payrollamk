@@ -47,6 +47,14 @@
         </div>
 
         <div class="flex items-center gap-3">
+            <a href="{{ route('bank-data.index') }}"
+               class="px-4 py-2.5 bg-slate-900 hover:bg-slate-800 text-white rounded-xl text-sm font-semibold shadow-sm flex items-center gap-2 transition">
+                <svg class="w-4 h-4 text-orange-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 7v10c0 2.21 3.582 4 8 4s8-1.79 8-4V7M4 7c0 2.21 3.582 4 8 4s8-1.79 8-4M4 7c0-2.21 3.582-4 8-4s8 1.79 8 4m0 5c0 2.21-3.582 4-8 4s-8-1.79-8-4"/>
+                </svg>
+                Bank Data Bulanan (Presensi & Omzet)
+            </a>
+
             <button @click="createModalOpen = true" 
                     class="px-4 py-2.5 bg-orange-600 hover:bg-orange-700 text-white rounded-xl text-sm font-semibold shadow-md shadow-orange-600/20 flex items-center gap-2 transition active:scale-95 cursor-pointer">
                 <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -215,6 +223,20 @@
                                     {{ $isSalary ? $task->salary_records_count : $task->incentive_records_count }} Orang
                                 </span>
                             </div>
+                        </div>
+
+                        <!-- Bank Data Readiness Badges -->
+                        @php
+                            $readiness = $taskReadinessMap[$task->id] ?? ['is_ready' => true, 'required_periods' => [], 'missing' => []];
+                        @endphp
+                        <div class="mt-2.5 flex flex-wrap items-center gap-1.5">
+                            @foreach($readiness['required_periods'] as $reqItem)
+                                <a href="{{ route('bank-data.index', ['year' => $reqItem['year'], 'month' => $reqItem['month'], 'tab' => strtolower($reqItem['type'])]) }}"
+                                   class="px-2 py-0.5 rounded-md text-[10px] font-semibold border transition flex items-center gap-1 {{ $reqItem['is_ready'] ? 'bg-emerald-50 text-emerald-700 border-emerald-200 hover:bg-emerald-100' : 'bg-red-50 text-red-700 border-red-200 hover:bg-red-100' }}">
+                                    <span>{{ $reqItem['is_ready'] ? '✓' : '⚠ Upload:' }}</span>
+                                    <span>{{ $reqItem['label'] }}</span>
+                                </a>
+                            @endforeach
                         </div>
 
                         @if ($task->notes)

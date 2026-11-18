@@ -14,7 +14,7 @@ class SalaryCalculatorService
     /**
      * Recalculate a single SalaryRecord and all its daily logs.
      * Dynamic Daily Outlet Logic:
-     * - Each day's meal allowance is taken from THAT DATE'S worked outlet.
+     * - Each day's meal allowance is taken from THAT DATE'S worked outlet (or custom_nominal_override if set).
      * - Monthly Gaji Pokok and Uang Pulsa are determined by the Dominant Outlet (or manual reference_outlet_id).
      */
     public function calculateRecord(SalaryRecord $record, bool $save = true): SalaryRecord
@@ -38,20 +38,34 @@ class SalaryCalculatorService
             }
             $log->multiplier = $multiplier;
 
-            if ($log->is_present && $log->chosenOutlet) {
+            $hasCustomOverride = $log->custom_nominal_override !== null && (float)$log->custom_nominal_override > 0;
+
+            if (($log->is_present && $log->chosenOutlet) || $hasCustomOverride) {
                 $totalHariMasuk++;
-                $workOutlet = $log->chosenOutlet;
-                $log->outlet_code = $workOutlet->outlet_code;
+                if (!$log->is_present && $hasCustomOverride) {
+                    $log->is_present = true;
+                }
 
-                $outletVisitsCount[$workOutlet->id] = ($outletVisitsCount[$workOutlet->id] ?? 0) + 1;
-                $outletObjects[$workOutlet->id] = $workOutlet;
+                if ($log->chosenOutlet) {
+                    $workOutlet = $log->chosenOutlet;
+                    $log->outlet_code = $workOutlet->outlet_code;
+                    $outletVisitsCount[$workOutlet->id] = ($outletVisitsCount[$workOutlet->id] ?? 0) + 1;
+                    $outletObjects[$workOutlet->id] = $workOutlet;
+                }
 
-                // Daily meal allowance strictly from THAT DATE'S outlet
-                $dailyUtamaRate = (float)$workOutlet->uang_makan_utama;
-                $dailyTambahanRate = (float)$workOutlet->uang_makan_tambahan;
+                if ($log->custom_nominal_override !== null) {
+                    $calcUtama = (float)$log->custom_nominal_override;
+                    $calcTambahan = 0.0;
+                } elseif ($log->chosenOutlet) {
+                    $dailyUtamaRate = (float)$log->chosenOutlet->uang_makan_utama;
+                    $dailyTambahanRate = (float)$log->chosenOutlet->uang_makan_tambahan;
 
-                $calcUtama = $dailyUtamaRate * $multiplier;
-                $calcTambahan = $dailyTambahanRate * $multiplier;
+                    $calcUtama = $dailyUtamaRate * $multiplier;
+                    $calcTambahan = $dailyTambahanRate * $multiplier;
+                } else {
+                    $calcUtama = 0.0;
+                    $calcTambahan = 0.0;
+                }
 
                 $log->daily_uang_makan_utama = $calcUtama;
                 $log->daily_uang_makan_tambahan = $calcTambahan;
@@ -64,6 +78,7 @@ class SalaryCalculatorService
                 if (!$log->is_present) {
                     $log->chosen_outlet_id = null;
                     $log->outlet_code = null;
+                    $log->custom_nominal_override = null;
                 }
             }
 
@@ -77,6 +92,7 @@ class SalaryCalculatorService
         $dominantOutlet = null;
         $maxDays = -1;
         $highestPokokInTie = -1;
+        $highestUtamaInTie = -1;
 
         foreach ($outletVisitsCount as $outletId => $daysCount) {
             $outObj = $outletObjects[$outletId];
@@ -87,11 +103,16 @@ class SalaryCalculatorService
                 'days' => $daysCount,
             ];
 
-            // Resolve Dominant Outlet: most days worked, if tied take highest gaji_pokok
+            // Resolve Dominant Outlet: most days worked, tie-breaker = highest rate
             $pokokVal = (float)$outObj->gaji_pokok;
-            if ($daysCount > $maxDays || ($daysCount === $maxDays && $pokokVal > $highestPokokInTie)) {
+            $utamaVal = (float)$outObj->uang_makan_utama;
+            if (
+                $daysCount > $maxDays ||
+                ($daysCount === $maxDays && ($pokokVal > $highestPokokInTie || ($pokokVal === $highestPokokInTie && $utamaVal > $highestUtamaInTie)))
+            ) {
                 $maxDays = $daysCount;
                 $highestPokokInTie = $pokokVal;
+                $highestUtamaInTie = $utamaVal;
                 $dominantOutlet = $outObj;
             }
         }
@@ -119,20 +140,24 @@ class SalaryCalculatorService
         }
 
         $outletBaseSalary = (float)($effectiveReferenceOutlet ? $effectiveReferenceOutlet->gaji_pokok : 0);
-        $outletPulsa = (float)($effectiveReferenceOutlet ? $effectiveReferenceOutlet->uang_pulsa : 0);
+        $outletPulsa = ($totalHariMasuk > 0 || $record->policy_100_percent_override)
+            ? (float)($effectiveReferenceOutlet ? $effectiveReferenceOutlet->uang_pulsa : 0)
+            : 0.0;
 
         // Attendance Percentage based on benchmark 26 days
         $attendancePercentage = round(($totalHariMasuk / self::BENCHMARK_DAYS) * 100, 2);
 
-        // 40% threshold logic
-        if ($attendancePercentage >= self::THRESHOLD_PERCENT) {
+        // 40% threshold logic: >= (0.40 * 26) i.e. >= 10.4 days (11+ days)
+        $meetsThreshold = $totalHariMasuk >= (0.40 * self::BENCHMARK_DAYS);
+
+        if ($meetsThreshold) {
             $recommendedBaseSalary = $outletBaseSalary;
         } else {
             $recommendedBaseSalary = (float)round(($outletBaseSalary / self::BENCHMARK_DAYS) * $totalHariMasuk);
         }
 
         // Policy 100% full override check
-        if ($record->policy_100_percent_override || $attendancePercentage >= self::THRESHOLD_PERCENT) {
+        if ($record->policy_100_percent_override || $meetsThreshold) {
             $finalBaseSalary = $outletBaseSalary;
         } else {
             $finalBaseSalary = $recommendedBaseSalary;
@@ -181,7 +206,6 @@ class SalaryCalculatorService
             ];
         }
 
-        // Tokenize cell value (e.g. "TP-2", "PTC", "ITC-UG lip", "DELTA TP-1")
         $tokens = preg_split('/[\s,\/]+/', $clean, -1, PREG_SPLIT_NO_EMPTY);
         $matchedOutlets = [];
 
@@ -200,7 +224,6 @@ class SalaryCalculatorService
         }
 
         if (empty($matchedOutlets)) {
-            // If recognized as present but no explicit outlet token, fall back to default outlet if available
             $chosenId = $fallbackOutlet ? $fallbackOutlet->id : null;
             $chosenCode = $fallbackOutlet ? $fallbackOutlet->outlet_code : $clean;
             return [
@@ -211,7 +234,6 @@ class SalaryCalculatorService
             ];
         }
 
-        // If multiple codes in single cell, take the highest constant value
         $chosenOutlet = null;
         $highestConstant = -1;
         $matchedCodes = [];

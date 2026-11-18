@@ -20,6 +20,7 @@ class IncentiveDailyLog extends Model
         'omzet_amk',
         'omzet_amkopi',
         'total_daily_omzet',
+        'is_manual_override',
     ];
 
     protected $casts = [
@@ -29,6 +30,7 @@ class IncentiveDailyLog extends Model
         'omzet_amk' => 'float',
         'omzet_amkopi' => 'float',
         'total_daily_omzet' => 'float',
+        'is_manual_override' => 'boolean',
     ];
 
     public function incentiveRecord(): BelongsTo

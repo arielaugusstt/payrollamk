@@ -29,7 +29,7 @@ class IncentiveCalculatorService
             $totalAmk += (float)$log->omzet_amk;
             $totalAmkopi += (float)$log->omzet_amkopi;
 
-            if ($dailyTotal > 0 && $log->outlet) {
+            if ($log->outlet) {
                 $outId = $log->outlet->id;
                 if (!isset($outletOmzetMap[$outId])) {
                     $outletOmzetMap[$outId] = [
@@ -73,16 +73,16 @@ class IncentiveCalculatorService
 
         if ($totalOmzet > $threshold) {
             // Tier 1: First 5,000,000 * 1.25% = 62,500
-            $insentifTier1 = round($threshold * $tier1Rate, 2);
+            $insentifTier1 = round($threshold * $tier1Rate);
 
             // Tier 2: Remaining * 2.5%
             $remainder = $totalOmzet - $threshold;
-            $insentifTier2 = round($remainder * $tier2Rate, 2);
+            $insentifTier2 = round($remainder * $tier2Rate);
 
             $insentifMurni = $insentifTier1 + $insentifTier2;
         } else {
             // Below or equal threshold: Flat 2.5% of total omzet
-            $insentifMurni = round($totalOmzet * $belowRate, 2);
+            $insentifMurni = round($totalOmzet * $belowRate);
         }
 
         $record->outlets_summary = $outletsSummary;

@@ -1,6 +1,7 @@
 <?php
 
 use App\Http\Controllers\AuthController;
+use App\Http\Controllers\BankDataController;
 use App\Http\Controllers\DashboardController;
 use App\Http\Controllers\ExportController;
 use App\Http\Controllers\MasterDataController;
@@ -24,11 +25,24 @@ Route::middleware('auth')->group(function () {
     Route::post('/logout', [AuthController::class, 'logout'])->name('logout');
     Route::post('/change-password', [AuthController::class, 'changePassword'])->name('password.change');
 
-    // Module 1: Task Hub & Matrix
+    // Module 1: Bank Data Bulanan (Presensi & Omzet Calendar Database)
+    Route::prefix('bank-data')->name('bank-data.')->group(function () {
+        Route::get('/', [BankDataController::class, 'index'])->name('index');
+        Route::post('/upload-presensi', [BankDataController::class, 'uploadPresensi'])->name('upload.presensi');
+        Route::post('/upload-omzet', [BankDataController::class, 'uploadOmzet'])->name('upload.omzet');
+        Route::delete('/delete-presensi', [BankDataController::class, 'deletePresensi'])->name('delete.presensi');
+        Route::delete('/delete-omzet', [BankDataController::class, 'deleteOmzet'])->name('delete.omzet');
+        Route::post('/presensi-cell', [BankDataController::class, 'updatePresensiCell'])->name('presensi.cell');
+        Route::post('/omzet-cell', [BankDataController::class, 'updateOmzetCell'])->name('omzet.cell');
+    });
+
+    // Module 2: Task Hub & Matrix
     Route::prefix('tasks')->name('tasks.')->group(function () {
         Route::get('/', [TaskController::class, 'index'])->name('index');
         Route::post('/', [TaskController::class, 'store'])->name('store');
         Route::get('/{task}', [TaskController::class, 'show'])->name('show');
+        Route::post('/{task}/resync-bank-data', [TaskController::class, 'resyncFromBankData'])->name('resync_bank_data');
+        Route::delete('/{task}/clear-data', [TaskController::class, 'clearTaskData'])->name('clear_data');
         Route::post('/{task}/cell', [TaskController::class, 'updateCell'])->name('cell.update');
         Route::post('/{task}/multiplier', [TaskController::class, 'updateMultiplier'])->name('multiplier.update');
         Route::post('/{task}/auto-sundays', [TaskController::class, 'autoMarkSundays'])->name('auto_sundays');
@@ -40,7 +54,7 @@ Route::middleware('auth')->group(function () {
         Route::post('/{task}/reopen', [TaskController::class, 'reopen'])->name('reopen');
         Route::delete('/{task}', [TaskController::class, 'destroy'])->name('destroy');
 
-        // Module 3: Upload & Validation
+        // Direct Task Upload & Validation
         Route::post('/{task}/upload', [UploadController::class, 'upload'])->name('upload');
         Route::get('/{task}/upload/validation', [UploadController::class, 'showValidation'])->name('upload.validation');
         Route::post('/{task}/upload/commit', [UploadController::class, 'commitValidation'])->name('upload.commit');
@@ -49,7 +63,7 @@ Route::middleware('auth')->group(function () {
     // Slips
     Route::get('/slips/{record}', [SlipController::class, 'show'])->name('slips.show');
 
-    // Module 2: Master Data & Configurable Constants
+    // Master Data & Configurable Constants
     Route::prefix('master')->name('master.')->group(function () {
         Route::get('/', [MasterDataController::class, 'index'])->name('index');
 
@@ -71,7 +85,7 @@ Route::middleware('auth')->group(function () {
         Route::post('/incentive-settings', [MasterDataController::class, 'updateIncentiveSettings'])->name('incentive.update');
     });
 
-    // Module 5: Executive Dashboard
+    // Executive Dashboard
     Route::get('/dashboard', [DashboardController::class, 'index'])->name('dashboard.index');
 
     // Exports

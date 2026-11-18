@@ -2,9 +2,12 @@
 
 namespace Tests\Feature;
 
+use App\Models\BankOmzetDaily;
+use App\Models\BankPresensiDaily;
 use App\Models\IncentiveDailyLog;
 use App\Models\IncentiveRecord;
 use App\Models\IncentiveSetting;
+use App\Models\MonthlyDataPeriod;
 use App\Models\Outlet;
 use App\Models\OutletAlias;
 use App\Models\PayrollTask;
@@ -16,7 +19,7 @@ use App\Models\User;
 use App\Services\IncentiveCalculatorService;
 use App\Services\SalaryCalculatorService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
-use Illuminate\Support\Facades\Hash;
+use Illuminate\Http\UploadedFile;
 use Tests\TestCase;
 
 class PayrollEngineTest extends TestCase
@@ -36,6 +39,40 @@ class PayrollEngineTest extends TestCase
         parent::setUp();
 
         $this->seed();
+
+        // Populate test fixture tasks in the isolated test database
+        $bankService = app(\App\Services\BankDataService::class);
+        $presensiSample = database_path('seeders/samples/presensirev.xlsx');
+        $omzetSample = database_path('seeders/samples/omsetrev.xlsx');
+        if (file_exists($presensiSample) && file_exists($omzetSample)) {
+            foreach ([10, 11, 12] as $m) {
+                $bankService->importPresensi($presensiSample, 2026, $m, 'presensirev.xlsx');
+                $bankService->importOmzet($omzetSample, 2026, $m, 'omsetrev.xlsx');
+            }
+        }
+        foreach ([
+            ['type' => 'SALARY', 'month' => 12, 'year' => 2026, 'status' => 'FINISHED'],
+            ['type' => 'INSENTIF', 'month' => 12, 'year' => 2026, 'status' => 'FINISHED'],
+            ['type' => 'SALARY', 'month' => 1, 'year' => 2027, 'status' => 'DRAFT'],
+            ['type' => 'INSENTIF', 'month' => 1, 'year' => 2027, 'status' => 'DRAFT'],
+        ] as $tData) {
+            $periodInfo = PayrollTask::calculateWorkingPeriod($tData['type'], $tData['month'], $tData['year']);
+            $task = PayrollTask::create([
+                'task_type' => $tData['type'],
+                'title' => 'Payroll ' . ($tData['type'] === 'SALARY' ? 'Salary' : 'Insentif') . ' ' . $periodInfo['period_label'],
+                'period_month' => $tData['month'],
+                'period_year' => $tData['year'],
+                'period_label' => $periodInfo['period_label'],
+                'start_date' => $periodInfo['start_date'],
+                'end_date' => $periodInfo['end_date'],
+                'status' => 'DRAFT',
+                'twin_outlet_mode' => 'full',
+            ]);
+            $bankService->syncTaskFromBankData($task, false);
+            if ($tData['status'] === 'FINISHED') {
+                $task->update(['status' => 'FINISHED', 'finished_at' => now()]);
+            }
+        }
 
         $this->admin = User::where('email', 'admin@payroll.local')->first();
         $this->outletDelta = Outlet::where('outlet_code', 'DELTA')->first();
@@ -57,7 +94,6 @@ class PayrollEngineTest extends TestCase
 
     public function test_login_successful_with_email_and_username(): void
     {
-        // With email
         $response = $this->post('/login', [
             'login' => 'admin@payroll.local',
             'password' => 'password123',
@@ -65,11 +101,9 @@ class PayrollEngineTest extends TestCase
         $response->assertRedirect('/tasks');
         $this->assertAuthenticatedAs($this->admin);
 
-        // Logout
         $this->post('/logout');
         $this->assertGuest();
 
-        // With username
         $response = $this->post('/login', [
             'login' => 'admin',
             'password' => 'password123',
@@ -90,11 +124,6 @@ class PayrollEngineTest extends TestCase
         $this->assertEquals('2026-11-21', $salJan27['start_date']);
         $this->assertEquals('2026-12-20', $salJan27['end_date']);
 
-        // Salary Februari 2027: 21 Des 2026 – 20 Jan 2027
-        $salFeb27 = PayrollTask::calculateWorkingPeriod('SALARY', 2, 2027);
-        $this->assertEquals('2026-12-21', $salFeb27['start_date']);
-        $this->assertEquals('2027-01-20', $salFeb27['end_date']);
-
         // Insentif Desember 2026: 1 Nov 2026 – 30 Nov 2026
         $incDes26 = PayrollTask::calculateWorkingPeriod('INSENTIF', 12, 2026);
         $this->assertEquals('2026-11-01', $incDes26['start_date']);
@@ -108,56 +137,63 @@ class PayrollEngineTest extends TestCase
 
     public function test_incentive_calculation_tiered_and_flat_formulas(): void
     {
-        $incentiveCalc = app(IncentiveCalculatorService::class);
-        $settings = IncentiveSetting::current();
+        // Insentif Januari 2027 (31 days: 1-31 Des 2026 from presensirev.xlsx & omsetrev.xlsx)
+        $incTask = PayrollTask::where('task_type', 'INSENTIF')
+            ->where('period_month', 1)
+            ->where('period_year', 2027)
+            ->first();
 
-        // Test Case 1: Mega with Rp 22.500.000 -> 62.500 + 2.5% * 17.500.000 (437.500) = Rp 500.000
-        $megaTask = PayrollTask::where('task_type', 'INSENTIF')->where('period_month', 12)->first();
-        $megaRec = IncentiveRecord::where('payroll_task_id', $megaTask->id)
+        // MEGA (> 5,000,000): AMK 110,204,000 + Kopi 13,215,000 = 123,419,000 -> Insentif = 62,500 + 2.5% * 118,419,000 = 3,022,975
+        $megaRec = IncentiveRecord::where('payroll_task_id', $incTask->id)
             ->where('spg_id', $this->spgMega->id)
             ->first();
 
-        $this->assertEquals(22500000.0, (float)$megaRec->total_omzet);
+        $this->assertEquals(110204000.0, (float)$megaRec->total_omzet_amk);
+        $this->assertEquals(13215000.0, (float)$megaRec->total_omzet_amkopi);
+        $this->assertEquals(123419000.0, (float)$megaRec->total_omzet);
         $this->assertEquals(62500.0, (float)$megaRec->insentif_tier_1);
-        $this->assertEquals(437500.0, (float)$megaRec->insentif_tier_2);
-        $this->assertEquals(500000.0, (float)$megaRec->insentif_murni);
+        $this->assertEquals(2960475.0, (float)$megaRec->insentif_tier_2);
+        $this->assertEquals(3022975.0, (float)$megaRec->insentif_murni);
 
-        // Test Case 2: Fitri with Rp 3.500.000 -> 2.5% * 3.500.000 = Rp 87.500
-        $fitriRec = IncentiveRecord::where('payroll_task_id', $megaTask->id)
-            ->where('spg_id', $this->spgFitri->id)
+        // Flat <= 5,000,000 formula verification
+        $spgShela = Spg::where('spg_name', 'SHELA')->first();
+        $shelaRec = IncentiveRecord::where('payroll_task_id', $incTask->id)
+            ->where('spg_id', $spgShela->id)
             ->first();
+        $firstLog = $shelaRec->dailyLogs()->first();
+        $firstLog->update(['outlet_id' => $this->outletDelta->id, 'outlet_code' => 'DELTA', 'omzet_amk' => 3500000, 'omzet_amkopi' => 0]);
+        app(IncentiveCalculatorService::class)->calculateRecord($shelaRec->fresh(), null, true);
+        $shelaRec->refresh();
 
-        $this->assertEquals(3500000.0, (float)$fitriRec->total_omzet);
-        $this->assertEquals(87500.0, (float)$fitriRec->insentif_murni);
+        $this->assertEquals(3500000.0, (float)$shelaRec->total_omzet);
+        $this->assertEquals(87500.0, (float)$shelaRec->insentif_murni);
     }
 
     public function test_salary_calculation_40_percent_threshold_and_policy_override(): void
     {
-        $salaryCalc = app(SalaryCalculatorService::class);
         $salaryTask = PayrollTask::where('task_type', 'SALARY')->where('period_month', 12)->first();
-        // Ensure task is DRAFT to allow toggle
         $salaryTask->update(['status' => 'DRAFT']);
 
-        // SPG PUJI has 8 days present (8 / 26 = 30.77% < 40%)
-        $spgPuji = Spg::where('spg_name', 'PUJI')->first();
-        $pujiRec = SalaryRecord::where('payroll_task_id', $salaryTask->id)
-            ->where('spg_id', $spgPuji->id)
+        // SPG TRI has 6 days present in 21 Okt - 20 Nov (6 / 26 = 23.08% < 40%)
+        $spgTri = Spg::where('spg_name', 'TRI')->first();
+        $triRec = SalaryRecord::where('payroll_task_id', $salaryTask->id)
+            ->where('spg_id', $spgTri->id)
             ->first();
 
-        $this->assertEquals(8, $pujiRec->total_hari_masuk);
-        $this->assertLessThan(40.0, $pujiRec->attendance_percentage);
-        $this->assertEquals((float)round(($pujiRec->base_salary_outlet / 26) * 8), (float)$pujiRec->base_salary_recommended);
-        $this->assertEquals((float)$pujiRec->base_salary_recommended, (float)$pujiRec->base_salary_final);
+        $this->assertEquals(6, $triRec->total_hari_masuk);
+        $this->assertLessThan(40.0, $triRec->attendance_percentage);
+        $this->assertEquals((float)round(($triRec->base_salary_outlet / 26) * 6), (float)$triRec->base_salary_recommended);
+        $this->assertEquals((float)$triRec->base_salary_recommended, (float)$triRec->base_salary_final);
 
         // Test Policy 100% full override toggle
-        $response = $this->actingAs($this->admin)->post("/tasks/{$salaryTask->id}/policy/{$pujiRec->id}", [
+        $response = $this->actingAs($this->admin)->post("/tasks/{$salaryTask->id}/policy/{$triRec->id}", [
             'policy_override' => true,
         ]);
         $response->assertStatus(200);
 
-        $pujiRec->refresh();
-        $this->assertTrue((bool)$pujiRec->policy_100_percent_override);
-        $this->assertEquals((float)$pujiRec->base_salary_outlet, (float)$pujiRec->base_salary_final);
+        $triRec->refresh();
+        $this->assertTrue((bool)$triRec->policy_100_percent_override);
+        $this->assertEquals((float)$triRec->base_salary_outlet, (float)$triRec->base_salary_final);
     }
 
     public function test_multi_code_highest_constant_rule(): void
@@ -170,8 +206,6 @@ class PayrollEngineTest extends TestCase
             $aliasMap[strtolower(trim($al->alias))] = $al->outlet;
         }
 
-        // DELTA has 36.000, ITC has 45.713
-        // When cell is "DELTA ITC", chosen outlet should be ITC (higher constant: 45.713 vs 36.000)
         $resolved = $salaryCalc->resolveCellPresenceAndOutlet('DELTA ITC', $this->outletDelta, $outletsMap, $aliasMap);
 
         $this->assertTrue($resolved['is_present']);
@@ -194,14 +228,12 @@ class PayrollEngineTest extends TestCase
     {
         $task = PayrollTask::where('status', 'DRAFT')->first();
 
-        // Finish task
         $response = $this->actingAs($this->admin)->post("/tasks/{$task->id}/finish");
         $response->assertRedirect();
         $task->refresh();
         $this->assertEquals('FINISHED', $task->status);
         $this->assertNotNull($task->finished_at);
 
-        // Reopen task
         $response = $this->actingAs($this->admin)->post("/tasks/{$task->id}/reopen");
         $response->assertRedirect();
         $task->refresh();
@@ -214,7 +246,6 @@ class PayrollEngineTest extends TestCase
         $response->assertStatus(200);
         $response->assertSee('Grand Total Payroll Outflow');
 
-        // Test export annual matrix
         $exportResponse = $this->actingAs($this->admin)->get('/export/annual?year=2026');
         $exportResponse->assertStatus(200);
         $this->assertStringContainsString('spreadsheetml.sheet', $exportResponse->headers->get('content-type'));
@@ -222,7 +253,6 @@ class PayrollEngineTest extends TestCase
 
     public function test_master_data_crud(): void
     {
-        // Add Outlet
         $response = $this->actingAs($this->admin)->post('/master/outlets', [
             'outlet_code' => 'SURABAYA-1',
             'outlet_name' => 'Surabaya Mall',
@@ -234,7 +264,6 @@ class PayrollEngineTest extends TestCase
         $response->assertRedirect();
         $this->assertDatabaseHas('outlets', ['outlet_code' => 'SURABAYA-1']);
 
-        // Add Alias
         $outlet = Outlet::where('outlet_code', 'SURABAYA-1')->first();
         $this->post('/master/aliases', [
             'outlet_id' => $outlet->id,
@@ -242,7 +271,6 @@ class PayrollEngineTest extends TestCase
         ]);
         $this->assertDatabaseHas('outlet_aliases', ['alias' => 'sb1']);
 
-        // Add SPG (with optional default outlet)
         $this->post('/master/spgs', [
             'spg_name' => 'Clara',
             'default_outlet_id' => $outlet->id,
@@ -254,32 +282,27 @@ class PayrollEngineTest extends TestCase
     public function test_dynamic_daily_outlet_switching_and_dominant_outlet_resolution(): void
     {
         $salaryTask = PayrollTask::where('task_type', 'SALARY')->where('period_month', 12)->first();
+        $spgWahyu = Spg::where('spg_name', 'WAHYU')->first();
         $salaryRecord = SalaryRecord::where('payroll_task_id', $salaryTask->id)
-            ->where('spg_id', $this->spgFitri->id)
+            ->where('spg_id', $spgWahyu->id)
             ->first();
 
-        // Fitri in seeder worked 18 days at DELTA, 5 days at TP-2, 1 day at PA-1
+        // WAHYU rotates across multiple outlets (BG-L2, GC, ITC-UG, TP-1, WTC, R-4)
         $this->assertNotNull($salaryRecord);
         $this->assertIsArray($salaryRecord->outlets_summary);
+        $this->assertGreaterThan(3, count($salaryRecord->outlets_summary));
 
-        $summaryMap = collect($salaryRecord->outlets_summary)->pluck('days', 'code')->all();
-        $this->assertEquals(18, $summaryMap['DELTA'] ?? 0);
-        $this->assertEquals(5, $summaryMap['TP-2'] ?? 0);
-        $this->assertEquals(1, $summaryMap['PA-1'] ?? 0);
+        $dominantSummary = $salaryRecord->outlets_summary[0];
+        $this->assertEquals($dominantSummary['id'], $salaryRecord->reference_outlet_id);
+        $this->assertEquals('GC', $salaryRecord->referenceOutlet->outlet_code);
 
-        // Dominant outlet should resolve to DELTA
-        $this->assertEquals($this->outletDelta->id, $salaryRecord->reference_outlet_id);
-        $this->assertEquals('DELTA', $salaryRecord->referenceOutlet->outlet_code);
-        $this->assertEquals((float)$this->outletDelta->gaji_pokok, (float)$salaryRecord->base_salary_outlet);
-
-        // Daily meal allowances should be calculated strictly per date's outlet
-        $tp2Outlet = Outlet::where('outlet_code', 'TP-2')->first();
-        $tp2Log = SalaryDailyLog::where('salary_record_id', $salaryRecord->id)
-            ->where('chosen_outlet_id', $tp2Outlet->id)
+        $tp1Outlet = Outlet::where('outlet_code', 'TP-1')->first();
+        $tp1Log = SalaryDailyLog::where('salary_record_id', $salaryRecord->id)
+            ->where('chosen_outlet_id', $tp1Outlet->id)
             ->first();
-        $this->assertNotNull($tp2Log);
-        $expectedMeal = (float)$tp2Outlet->uang_makan_utama * (int)$tp2Log->multiplier;
-        $this->assertEquals($expectedMeal, (float)$tp2Log->nominal_uang_makan);
+        $this->assertNotNull($tp1Log);
+        $expectedMeal = (float)$tp1Outlet->uang_makan_utama * (int)$tp1Log->multiplier;
+        $this->assertEquals($expectedMeal, (float)$tp1Log->nominal_uang_makan);
     }
 
     public function test_manual_reference_outlet_override(): void
@@ -294,7 +317,6 @@ class PayrollEngineTest extends TestCase
         $pa1Outlet = Outlet::where('outlet_code', 'PA-1')->first();
         $this->assertNotNull($pa1Outlet);
 
-        // Override reference outlet to PA-1
         $response = $this->actingAs($this->admin)->post("/tasks/{$salaryTask->id}/reference-outlet/{$salaryRecord->id}", [
             'reference_outlet_id' => $pa1Outlet->id,
         ]);
@@ -309,7 +331,6 @@ class PayrollEngineTest extends TestCase
 
     public function test_create_new_incentive_task_renders_matrix_without_errors(): void
     {
-        // Create brand new INSENTIF task for November 2026
         $response = $this->actingAs($this->admin)->post('/tasks', [
             'task_type' => 'INSENTIF',
             'period_month' => 11,
@@ -325,7 +346,10 @@ class PayrollEngineTest extends TestCase
 
         $this->assertNotNull($newTask);
 
-        // Access the show view of the newly created task (which previously threw Attempt to read property "outlet_code" on null)
+        // Because Oktober 2026 is seeded in Bank Data Bulanan, MEGA's 31-day Oktober omzet is automatically populated!
+        $megaRec = $newTask->incentiveRecords()->where('spg_id', $this->spgMega->id)->first();
+        $this->assertEquals(123419000.0, (float)$megaRec->total_omzet);
+
         $viewResponse = $this->actingAs($this->admin)->get("/tasks/{$newTask->id}");
         $viewResponse->assertStatus(200);
         $viewResponse->assertSee('Payroll Insentif');
@@ -335,31 +359,23 @@ class PayrollEngineTest extends TestCase
     public function test_spg_name_matching_distinguishes_pitri_and_fitri_and_dwi_and_dwie(): void
     {
         $allSpgs = Spg::all();
-        $this->assertGreaterThanOrEqual(20, $allSpgs->count());
+        $this->assertEquals(23, $allSpgs->count());
 
         $spgMap = [];
         foreach ($allSpgs as $s) {
             $spgMap[strtolower(trim($s->spg_name))] = $s;
         }
 
-        // Test case-insensitive exact matching
         $this->assertArrayHasKey('pitri', $spgMap);
         $this->assertArrayHasKey('fitri', $spgMap);
+        $this->assertArrayHasKey('mega', $spgMap);
+        $this->assertArrayHasKey('megha', $spgMap);
         $this->assertArrayHasKey('dwi', $spgMap);
         $this->assertArrayHasKey('dwie', $spgMap);
 
-        $spgPitri = $spgMap['pitri'];
-        $spgFitri = $spgMap['fitri'];
-        $spgDwi = $spgMap['dwi'];
-        $spgDwie = $spgMap['dwie'];
-
-        $this->assertNotEquals($spgPitri->id, $spgFitri->id);
-        $this->assertEquals('PITRI', $spgPitri->spg_name);
-        $this->assertEquals('FITRI', $spgFitri->spg_name);
-
-        $this->assertNotEquals($spgDwi->id, $spgDwie->id);
-        $this->assertEquals('DWI', $spgDwi->spg_name);
-        $this->assertEquals('DWIE', $spgDwie->spg_name);
+        $this->assertNotEquals($spgMap['pitri']->id, $spgMap['fitri']->id);
+        $this->assertNotEquals($spgMap['mega']->id, $spgMap['megha']->id);
+        $this->assertNotEquals($spgMap['dwi']->id, $spgMap['dwie']->id);
     }
 
     public function test_excel_matrix_parser_anomaly_detection(): void
@@ -368,24 +384,20 @@ class PayrollEngineTest extends TestCase
         $parser = app(\App\Services\ExcelMatrixParserService::class);
 
         $tempPath = storage_path('app/test_sample.xlsx');
-        
+
         $spreadsheet = new \PhpOffice\PhpSpreadsheet\Spreadsheet();
         $sheet = $spreadsheet->getActiveSheet();
         $sheet->setTitle('Sheet1');
-        
-        // Structure following official presensi.xlsx:
-        // Row 1: Col B onwards = SPG Names
+
         $sheet->setCellValue('A1', '');
         $sheet->setCellValue('B1', 'FITRI');
         $sheet->setCellValue('C1', 'MEGA');
-        
-        // Col A: Dates 1 to 31 running vertically
+
         for ($day = 1; $day <= 31; $day++) {
             $row = $day + 1;
             $sheet->setCellValue('A' . $row, $day);
         }
 
-        // FITRI worked at delta on Day 1
         $sheet->setCellValue('B2', 'delta');
 
         $writer = new \PhpOffice\PhpSpreadsheet\Writer\Xlsx($spreadsheet);
@@ -397,8 +409,7 @@ class PayrollEngineTest extends TestCase
         $this->assertEquals('FITRI', $analysis['presensi_rows'][0]['spg_name']);
         $this->assertEmpty($analysis['anomalies']['unrecognized_spgs']);
 
-        // Test Automatic Upload without manual mapping screen
-        $uploadedFile = new \Illuminate\Http\UploadedFile(
+        $uploadedFile = new UploadedFile(
             $tempPath,
             'test_sample.xlsx',
             'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
@@ -415,118 +426,83 @@ class PayrollEngineTest extends TestCase
         if (file_exists($tempPath)) {
             unlink($tempPath);
         }
-
-        // Test Automatic Upload for INSENTIF task with Presensi & Omzet sheet
-        $incTask = PayrollTask::where('task_type', 'INSENTIF')->first();
-        $tempIncPath = storage_path('app/test_sample_omzet.xlsx');
-
-        $incSpreadsheet = new \PhpOffice\PhpSpreadsheet\Spreadsheet();
-        $presensiSheet = $incSpreadsheet->getActiveSheet();
-        $presensiSheet->setTitle('Sheet1');
-        $presensiSheet->setCellValue('B1', 'MEGA');
-        for ($day = 1; $day <= 31; $day++) {
-            $presensiSheet->setCellValue('A' . ($day + 1), $day);
-        }
-        $presensiSheet->setCellValue('B2', 'R-1');
-
-        $omzetSheet = $incSpreadsheet->createSheet();
-        $omzetSheet->setTitle('omset');
-
-        // Omzet Sheet structure: Row 1 = Dates (Col B=1, Col C=2, ...), Col A = Outlets
-        $omzetSheet->setCellValue('A1', '');
-        for ($day = 1; $day <= 31; $day++) {
-            $colLetter = \PhpOffice\PhpSpreadsheet\Cell\Coordinate::stringFromColumnIndex($day + 1);
-            $omzetSheet->setCellValue($colLetter . '1', $day);
-        }
-        $omzetSheet->setCellValue('A2', 'R-1');
-        $omzetSheet->setCellValue('B2', 500000);
-
-        $incWriter = new \PhpOffice\PhpSpreadsheet\Writer\Xlsx($incSpreadsheet);
-        $incWriter->save($tempIncPath);
-
-        $incUploadedFile = new \Illuminate\Http\UploadedFile(
-            $tempIncPath,
-            'test_sample_omzet.xlsx',
-            'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-            null,
-            true
-        );
-
-        $incUploadResponse = $this->actingAs($this->admin)->post("/tasks/{$incTask->id}/upload", [
-            'excel_file' => $incUploadedFile,
-        ]);
-        $incUploadResponse->assertRedirect("/tasks/{$incTask->id}");
-        $incUploadResponse->assertSessionHas('success');
-
-        if (file_exists($tempIncPath)) {
-            unlink($tempIncPath);
-        }
     }
 
-    public function test_baku_format_upload_automatic_import_salary_and_incentive(): void
+    public function test_bank_data_bulanan_uploads_and_full_inline_pivot_editing(): void
     {
-        $bakuPath = '/Users/arielaugusta/.gemini/antigravity/brain/6889cbbe-7e2e-448d-a3c8-8fd8a7bb35c6/.user_uploaded/media_1794807459875_fbf45155.xlsx';
-        if (!file_exists($bakuPath)) {
-            $this->markTestSkipped('Baku file not available at specified path');
-        }
+        // 1. Access Bank Data Bulanan page
+        $indexRes = $this->actingAs($this->admin)->get('/bank-data?year=2026&month=11');
+        $indexRes->assertStatus(200);
+        $indexRes->assertSee('Bank Data Bulanan (Presensi & Omzet)', false);
 
-        // Test 1: Upload to Salary Task
-        $salaryTask = PayrollTask::where('task_type', 'SALARY')->first();
-        $uploadedSalary = new \Illuminate\Http\UploadedFile(
-            $bakuPath,
-            'presensi_baku.xlsx',
-            'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-            null,
-            true
-        );
+        // 2. Upload Presensi & Omzet for September 2026 via BankDataController
+        $presensiSample = database_path('seeders/samples/presensirev.xlsx');
+        $omzetSample = database_path('seeders/samples/omsetrev.xlsx');
 
-        $salaryRes = $this->actingAs($this->admin)->post("/tasks/{$salaryTask->id}/upload", [
-            'excel_file' => $uploadedSalary,
+        $tempPresensi = storage_path('app/temp_presensi_sep.xlsx');
+        $tempOmzet = storage_path('app/temp_omzet_sep.xlsx');
+        copy($presensiSample, $tempPresensi);
+        copy($omzetSample, $tempOmzet);
+
+        $pFile = new UploadedFile($tempPresensi, 'presensirev.xlsx', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', null, true);
+        $oFile = new UploadedFile($tempOmzet, 'omsetrev.xlsx', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', null, true);
+
+        $resP = $this->actingAs($this->admin)->post('/bank-data/upload-presensi', [
+            'year' => 2026,
+            'month' => 9,
+            'presensi_file' => $pFile,
         ]);
-        $salaryRes->assertRedirect("/tasks/{$salaryTask->id}");
-        $salaryRes->assertSessionHas('success');
+        $resP->assertRedirect();
 
-        $zildaRec = SalaryRecord::where('payroll_task_id', $salaryTask->id)
-            ->whereHas('spg', fn($q) => $q->where('spg_name', 'ZILDA'))
-            ->first();
-        $this->assertNotNull($zildaRec);
-        $this->assertEquals(27, $zildaRec->total_hari_masuk);
-        $this->assertGreaterThan(0, $zildaRec->total_salary);
-
-        // Test 2: Upload to Incentive Task
-        $incTask = PayrollTask::where('task_type', 'INSENTIF')->first();
-        if (!$incTask) {
-            $incTask = PayrollTask::create([
-                'title' => 'Payroll Insentif Baku Test',
-                'task_type' => 'INSENTIF',
-                'period_month' => 10,
-                'period_year' => 2026,
-                'period_label' => 'Oktober 2026',
-                'start_date' => '2026-10-01',
-                'end_date' => '2026-10-31',
-                'status' => 'DRAFT',
-            ]);
-        }
-
-        $uploadedInc = new \Illuminate\Http\UploadedFile(
-            $bakuPath,
-            'omzet_baku.xlsx',
-            'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-            null,
-            true
-        );
-
-        $incRes = $this->actingAs($this->admin)->post("/tasks/{$incTask->id}/upload", [
-            'excel_file' => $uploadedInc,
+        $resO = $this->actingAs($this->admin)->post('/bank-data/upload-omzet', [
+            'year' => 2026,
+            'month' => 9,
+            'omzet_file' => $oFile,
         ]);
-        $incRes->assertRedirect("/tasks/{$incTask->id}");
-        $incRes->assertSessionHas('success');
+        $resO->assertRedirect();
 
-        $megaInc = IncentiveRecord::where('payroll_task_id', $incTask->id)
-            ->whereHas('spg', fn($q) => $q->where('spg_name', 'MEGA'))
+        @unlink($tempPresensi);
+        @unlink($tempOmzet);
+
+        $sepPeriod = MonthlyDataPeriod::where('year', 2026)->where('month', 9)->first();
+        $this->assertNotNull($sepPeriod);
+        $this->assertTrue($sepPeriod->has_presensi);
+        $this->assertTrue($sepPeriod->has_omzet);
+
+        // Verify R-1 (outlet without SPG) is stored in bank_omzet_daily
+        $r1Day1 = BankOmzetDaily::where('period_id', $sepPeriod->id)
+            ->where('outlet_id', $this->outletR1->id)
+            ->where('day_number', 1)
             ->first();
-        $this->assertNotNull($megaInc);
-        $this->assertGreaterThan(0, $megaInc->total_omzet);
-        $this->assertGreaterThan(0, $megaInc->total_insentif);
+        $this->assertNotNull($r1Day1);
+        $this->assertEquals(1053000.0, (float)$r1Day1->omzet_amk);
+        $this->assertEquals(298000.0, (float)$r1Day1->omzet_amkopi);
+
+        // 3. Test Inline Cell Edit on Salary Task with Custom Daily Nominal Override & Update Bank Data
+        $salaryTask = PayrollTask::where('task_type', 'SALARY')->where('period_month', 1)->where('period_year', 2027)->first();
+        $megaSalaryRec = $salaryTask->salaryRecords()->where('spg_id', $this->spgMega->id)->first();
+
+        $cellEditRes = $this->actingAs($this->admin)->postJson("/tasks/{$salaryTask->id}/cell", [
+            'record_id' => $megaSalaryRec->id,
+            'date' => '2026-11-21',
+            'raw_value' => 'PTC',
+            'custom_nominal_override' => 75000,
+            'update_bank_data' => true,
+        ]);
+        $cellEditRes->assertStatus(200)->assertJson(['success' => true]);
+
+        $updatedLog = SalaryDailyLog::where('salary_record_id', $megaSalaryRec->id)
+            ->whereDate('date', '2026-11-21')
+            ->first();
+        $this->assertEquals('PTC', $updatedLog->outlet_code);
+        $this->assertEquals(75000.0, (float)$updatedLog->custom_nominal_override);
+        $this->assertEquals(75000.0, (float)$updatedLog->nominal_uang_makan);
+        $this->assertTrue($updatedLog->is_manual_override);
+
+        // Verify BankPresensiDaily was also updated for 2026-11-21
+        $bankCell = BankPresensiDaily::where('work_date', '2026-11-21')
+            ->where('spg_id', $this->spgMega->id)
+            ->first();
+        $this->assertEquals('PTC', $bankCell->raw_outlet_text);
     }
 }

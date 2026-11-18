@@ -5,7 +5,7 @@ namespace Database\Seeders;
 use App\Models\Outlet;
 use App\Models\OutletAlias;
 use Illuminate\Database\Seeder;
-use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Schema;
 
 class OutletSeeder extends Seeder
 {
@@ -15,11 +15,10 @@ class OutletSeeder extends Seeder
      */
     public function run(): void
     {
-        // Truncate outlets and aliases safely
-        DB::statement('PRAGMA foreign_keys = OFF;');
+        Schema::disableForeignKeyConstraints();
         OutletAlias::truncate();
         Outlet::truncate();
-        DB::statement('PRAGMA foreign_keys = ON;');
+        Schema::enableForeignKeyConstraints();
 
         $outletsData = [
             ['code' => 'R-1', 'name' => 'Royal Plaza 1', 'utama' => 28250, 'pokok' => 350000],
@@ -48,12 +47,12 @@ class OutletSeeder extends Seeder
             ['code' => 'SNCT', 'name' => 'Suncity Mall Sidoarjo', 'utama' => 36000, 'pokok' => 350000],
             ['code' => 'RMY', 'name' => 'Ramayana', 'utama' => 26500, 'pokok' => 350000],
             ['code' => 'KAZA', 'name' => 'Kaza City Mall', 'utama' => 30000, 'pokok' => 350000],
-            ['code' => 'GNT', 'name' => 'Grand City Mall', 'utama' => 42375, 'pokok' => 350000],
+            ['code' => 'GNT', 'name' => 'Giant', 'utama' => 42375, 'pokok' => 350000],
             ['code' => 'WTC', 'name' => 'World Trade Center', 'utama' => 30000, 'pokok' => 350000],
             ['code' => 'CWS', 'name' => 'Ciputra World Surabaya', 'utama' => 39750, 'pokok' => 350000],
             ['code' => 'PTC', 'name' => 'Pakuwon Trade Center', 'utama' => 45000, 'pokok' => 350000],
             ['code' => 'DTC', 'name' => 'Darmo Trade Center', 'utama' => 31125, 'pokok' => 350000],
-            ['code' => 'GC', 'name' => 'Galaxy Mall', 'utama' => 36000, 'pokok' => 350000],
+            ['code' => 'GC', 'name' => 'Grand City Mall', 'utama' => 36000, 'pokok' => 350000],
             ['code' => 'DELTA', 'name' => 'Plaza Delta Surabaya', 'utama' => 36000, 'pokok' => 350000],
         ];
 
@@ -70,45 +69,41 @@ class OutletSeeder extends Seeder
             ]);
         }
 
-        // Pre-Seeded Outlet Aliases
+        // Official Synonym Mappings
         $aliasesData = [
-            ['code' => 'DELTA', 'alias' => 'delta'],
+            ['code' => 'SNCT', 'alias' => 'SUNCITY'],
+            ['code' => 'SNCT', 'alias' => 'suncity'],
+            ['code' => 'GC', 'alias' => 'GRANDCITY'],
+            ['code' => 'GC', 'alias' => 'grandcity'],
+            ['code' => 'GC', 'alias' => 'gc'],
             ['code' => 'DELTA', 'alias' => 'ELTA'],
-            ['code' => 'PTC', 'alias' => 'ptc'],
+            ['code' => 'DELTA', 'alias' => 'delta'],
+            ['code' => 'DELTA', 'alias' => 'Delta'],
+            ['code' => 'LIPPO', 'alias' => 'lip'],
             ['code' => 'LIPPO', 'alias' => 'lippo'],
             ['code' => 'LIPPO', 'alias' => 'Lippo'],
-            ['code' => 'LIPPO', 'alias' => 'lip'],
             ['code' => 'WTC', 'alias' => 'WT'],
             ['code' => 'WTC', 'alias' => 'wtc'],
             ['code' => 'KAZA', 'alias' => 'KA'],
             ['code' => 'KAZA', 'alias' => 'kaza'],
-            ['code' => 'SNCT', 'alias' => 'suncity'],
-            ['code' => 'SNCT', 'alias' => 'SUNCITY'],
-            ['code' => 'GC', 'alias' => 'gc'],
-            ['code' => 'GC', 'alias' => 'GC'],
-            ['code' => 'GNT', 'alias' => 'giant'],
             ['code' => 'GNT', 'alias' => 'GIANT'],
-            ['code' => 'GNT', 'alias' => 'grandcity'],
-            ['code' => 'GNT', 'alias' => 'GRANDCITY'],
-            ['code' => 'CWS', 'alias' => 'ciputra'],
+            ['code' => 'GNT', 'alias' => 'giant'],
             ['code' => 'CWS', 'alias' => 'CIPUTRA'],
-            ['code' => 'CT-1', 'alias' => 'cito'],
+            ['code' => 'CWS', 'alias' => 'ciputra'],
+            ['code' => 'PTC', 'alias' => 'ptc'],
+            ['code' => 'BG-LL', 'alias' => 'bg-ll'],
+            ['code' => 'BG-L2', 'alias' => 'bg-l2'],
+            ['code' => 'BG-LG', 'alias' => 'bg-lg'],
+            ['code' => 'BG-GL', 'alias' => 'bg-gl'],
             ['code' => 'CT-1', 'alias' => 'CITO'],
-            ['code' => 'RMY', 'alias' => 'marina'],
+            ['code' => 'CT-1', 'alias' => 'cito'],
             ['code' => 'RMY', 'alias' => 'MARINA'],
-            ['code' => 'PA-1', 'alias' => 'pa1'],
-            ['code' => 'PA-1', 'alias' => 'PA1'],
-            ['code' => 'TP-1', 'alias' => 'tp1'],
-            ['code' => 'TP-2', 'alias' => 'tp2'],
-            ['code' => 'TP-3', 'alias' => 'tp3'],
-            ['code' => 'R-1', 'alias' => 'r1'],
-            ['code' => 'R-2', 'alias' => 'r2'],
-            ['code' => 'R-4', 'alias' => 'r4'],
+            ['code' => 'RMY', 'alias' => 'marina'],
         ];
 
         foreach ($aliasesData as $item) {
             if (isset($outlets[$item['code']])) {
-                OutletAlias::create([
+                OutletAlias::firstOrCreate([
                     'outlet_id' => $outlets[$item['code']]->id,
                     'alias' => $item['alias'],
                 ]);

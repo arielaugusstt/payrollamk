@@ -2,9 +2,12 @@
 
 namespace App\Http\Controllers;
 
+use App\Models\BankOmzetDaily;
+use App\Models\BankPresensiDaily;
 use App\Models\IncentiveDailyLog;
 use App\Models\IncentiveRecord;
 use App\Models\IncentiveSetting;
+use App\Models\MonthlyDataPeriod;
 use App\Models\Outlet;
 use App\Models\OutletAlias;
 use App\Models\PayrollTask;
@@ -12,6 +15,7 @@ use App\Models\SalaryDailyLog;
 use App\Models\SalaryRecord;
 use App\Models\Spg;
 use App\Models\TaskDateMultiplier;
+use App\Services\BankDataService;
 use App\Services\IncentiveCalculatorService;
 use App\Services\SalaryCalculatorService;
 use Carbon\Carbon;
@@ -21,17 +25,20 @@ class TaskController extends Controller
 {
     protected SalaryCalculatorService $salaryCalc;
     protected IncentiveCalculatorService $incentiveCalc;
+    protected BankDataService $bankService;
 
     public function __construct(
         SalaryCalculatorService $salaryCalc,
-        IncentiveCalculatorService $incentiveCalc
+        IncentiveCalculatorService $incentiveCalc,
+        BankDataService $bankService
     ) {
         $this->salaryCalc = $salaryCalc;
         $this->incentiveCalc = $incentiveCalc;
+        $this->bankService = $bankService;
     }
 
     /**
-     * Module 1: Task Hub (Homepage)
+     * Module 2: Task Hub (Homepage)
      */
     public function index(Request $request)
     {
@@ -56,6 +63,12 @@ class TaskController extends Controller
 
         $tasks = $query->get();
 
+        // Attach Bank Data readiness to each task
+        $taskReadinessMap = [];
+        foreach ($tasks as $t) {
+            $taskReadinessMap[$t->id] = $this->bankService->checkTaskReadiness($t->task_type, $t->period_month, $t->period_year);
+        }
+
         $totalDraft = $tasks->where('status', 'DRAFT')->count();
         $totalFinished = $tasks->where('status', 'FINISHED')->count();
         $totalSalaryTasks = $tasks->where('task_type', 'SALARY')->count();
@@ -66,8 +79,12 @@ class TaskController extends Controller
             $availableYears = collect([2026, 2027]);
         }
 
+        $bankPeriods = MonthlyDataPeriod::orderBy('year', 'desc')->orderBy('month', 'desc')->get();
+
         return view('tasks.index', compact(
             'tasks',
+            'taskReadinessMap',
+            'bankPeriods',
             'totalDraft',
             'totalFinished',
             'totalSalaryTasks',
@@ -80,7 +97,7 @@ class TaskController extends Controller
     }
 
     /**
-     * Create New Task with automatic working period mapping.
+     * Create New Task with automatic working period mapping and Auto-Pull from Bank Data Bulanan.
      */
     public function store(Request $request)
     {
@@ -117,83 +134,39 @@ class TaskController extends Controller
             'start_date' => $periodInfo['start_date'],
             'end_date' => $periodInfo['end_date'],
             'status' => 'DRAFT',
+            'twin_outlet_mode' => 'full',
             'notes' => $request->notes,
         ]);
 
-        $dates = $task->getDatesList();
+        // Automatically pull and cross-match from Bank Data Bulanan
+        $this->bankService->syncTaskFromBankData($task, false);
+        $readiness = $this->bankService->checkTaskReadiness($taskType, $month, $year);
 
-        if ($task->isSalary()) {
-            foreach ($dates as $d) {
-                $isSunday = $d->isSunday();
-                TaskDateMultiplier::create([
-                    'payroll_task_id' => $task->id,
-                    'date' => $d->format('Y-m-d'),
-                    'multiplier' => $isSunday ? 2 : 1,
-                    'note' => $isSunday ? 'BESAR' : null,
-                ]);
-            }
+        if ($readiness['is_ready']) {
+            return redirect()->route('tasks.show', $task->id)
+                ->with('success', 'Task berhasil dibuat dan data otomatis ditarik dari Bank Data Bulanan!');
         }
 
-        $activeSpgs = Spg::where('is_active', true)->with(['defaultOutlet', 'assignedOutlet'])->get();
+        $missingLabels = implode(' & ', array_column($readiness['missing'], 'label'));
+        return redirect()->route('tasks.show', $task->id)
+            ->with('info', "Task berhasil dibuat! Catatan: {$missingLabels} belum diunggah di Bank Data Bulanan.");
+    }
 
-        if ($task->isSalary()) {
-            foreach ($activeSpgs as $spg) {
-                $outletId = $spg->default_outlet_id ?? $spg->assigned_outlet_id;
-                $rec = SalaryRecord::create([
-                    'payroll_task_id' => $task->id,
-                    'spg_id' => $spg->id,
-                    'assigned_outlet_id' => $outletId,
-                    'reference_outlet_id' => $outletId,
-                    'policy_100_percent_override' => false,
-                ]);
-
-                foreach ($dates as $d) {
-                    $isSunday = $d->isSunday();
-                    SalaryDailyLog::create([
-                        'salary_record_id' => $rec->id,
-                        'date' => $d->format('Y-m-d'),
-                        'raw_cell_value' => '-',
-                        'is_present' => false,
-                        'matched_outlet_codes' => [],
-                        'chosen_outlet_id' => null,
-                        'outlet_code' => null,
-                        'multiplier' => $isSunday ? 2 : 1,
-                        'daily_uang_makan_utama' => 0,
-                        'daily_uang_makan_tambahan' => 0,
-                    ]);
-                }
-
-                $this->salaryCalc->calculateRecord($rec, true);
-            }
-        } else {
-            $settings = IncentiveSetting::current();
-            foreach ($activeSpgs as $spg) {
-                $outletId = $spg->default_outlet_id ?? $spg->assigned_outlet_id;
-                $rec = IncentiveRecord::create([
-                    'payroll_task_id' => $task->id,
-                    'spg_id' => $spg->id,
-                    'assigned_outlet_id' => $outletId,
-                    'reference_outlet_id' => $outletId,
-                    'uang_tambahan' => 0,
-                ]);
-
-                foreach ($dates as $d) {
-                    IncentiveDailyLog::create([
-                        'incentive_record_id' => $rec->id,
-                        'date' => $d->format('Y-m-d'),
-                        'outlet_id' => null,
-                        'outlet_code' => null,
-                        'omzet_amk' => 0,
-                        'omzet_amkopi' => 0,
-                        'total_daily_omzet' => 0,
-                    ]);
-                }
-
-                $this->incentiveCalc->calculateRecord($rec, $settings, true);
-            }
+    /**
+     * Re-Sync Task from Bank Data Bulanan (preserving or resetting manual overrides).
+     */
+    public function resyncFromBankData(Request $request, PayrollTask $task)
+    {
+        if ($task->isFinished()) {
+            return back()->with('error', 'Task sudah FINISHED dan terkunci. Buka kembali task untuk sinkronisasi ulang.');
         }
 
-        return redirect()->route('tasks.show', $task->id)->with('success', 'Task berhasil dibuat!');
+        $preserve = $request->boolean('preserve_manual_overrides', true);
+        $result = $this->bankService->syncTaskFromBankData($task, $preserve);
+
+        $modeText = $preserve ? '(edit manual dipertahankan)' : '(seluruh sel di-reset sesuai Bank Data)';
+        return redirect()->route('tasks.show', $task->id)
+            ->with('success', "Sinkronisasi ulang dari Bank Data Bulanan berhasil! {$result['synced_records']} baris SPG diperbarui {$modeText}.");
     }
 
     /**
@@ -203,6 +176,7 @@ class TaskController extends Controller
     {
         $dates = $task->getDatesList();
         $allOutlets = Outlet::where('is_active', true)->orderBy('outlet_code')->get();
+        $bankReadiness = $this->bankService->checkTaskReadiness($task->task_type, $task->period_month, $task->period_year);
 
         if ($task->isSalary()) {
             $task->load([
@@ -227,7 +201,15 @@ class TaskController extends Controller
 
             $verificationGrid = $this->buildVerificationGrid($task, $allOutlets, $dates);
 
-            return view('tasks.show_salary', compact('task', 'dates', 'multipliersMap', 'grandTotals', 'allOutlets', 'verificationGrid'));
+            return view('tasks.show_salary', compact(
+                'task',
+                'dates',
+                'multipliersMap',
+                'grandTotals',
+                'allOutlets',
+                'verificationGrid',
+                'bankReadiness'
+            ));
         } else {
             $task->load([
                 'incentiveRecords.spg.defaultOutlet',
@@ -250,13 +232,22 @@ class TaskController extends Controller
 
             $verificationGrid = $this->buildVerificationGrid($task, $allOutlets, $dates);
 
-            return view('tasks.show_incentive', compact('task', 'dates', 'grandTotals', 'allOutlets', 'verificationGrid'));
+            return view('tasks.show_incentive', compact(
+                'task',
+                'dates',
+                'grandTotals',
+                'allOutlets',
+                'verificationGrid',
+                'bankReadiness'
+            ));
         }
     }
 
     /**
      * Inline update a cell in the horizontal matrix (AJAX).
-     * Dynamic: SPG can work at any outlet on any date.
+     * Supports:
+     * - Salary: Outlet Code OR OFF ('-') AND/OR Custom Daily Nominal Override (Rp), plus optional "Update Bank Data Bulanan juga".
+     * - Incentive: Outlet Code AND/OR Omzet AMK / Omzet AMKopi / Total Daily Omzet, plus optional "Update Bank Data Bulanan juga".
      */
     public function updateCell(Request $request, PayrollTask $task)
     {
@@ -266,11 +257,12 @@ class TaskController extends Controller
 
         $dateStr = $request->input('date');
         $recordId = (int)$request->input('record_id');
+        $updateBankData = $request->boolean('update_bank_data', false);
 
         if ($task->isSalary()) {
             $record = SalaryRecord::where('payroll_task_id', $task->id)->findOrFail($recordId);
             $log = SalaryDailyLog::where('salary_record_id', $record->id)
-                ->where('date', $dateStr)
+                ->whereDate('date', $dateStr)
                 ->firstOrFail();
 
             $rawValue = $request->input('raw_value');
@@ -278,19 +270,52 @@ class TaskController extends Controller
             $allAliases = OutletAlias::with('outlet')->get();
             $aliasMap = [];
             foreach ($allAliases as $al) {
-                $aliasMap[strtolower(trim($al->alias))] = $al->outlet;
+                if ($al->outlet) {
+                    $aliasMap[strtolower(trim($al->alias))] = $al->outlet;
+                }
             }
 
-            // Resolve dynamic outlet for that specific date
             $fallbackOutlet = $record->referenceOutlet ?? ($record->spg ? $record->spg->defaultOutlet : null);
             $resolved = $this->salaryCalc->resolveCellPresenceAndOutlet($rawValue, $fallbackOutlet, $outletsMap, $aliasMap);
 
-            $log->raw_cell_value = $rawValue;
-            $log->is_present = $resolved['is_present'];
+            // Handle custom_nominal_override
+            $customOverride = null;
+            if ($request->has('custom_nominal_override')) {
+                $rawNominal = $request->input('custom_nominal_override');
+                if ($rawNominal !== null && $rawNominal !== '') {
+                    $customOverride = max(0.0, (float)$rawNominal);
+                }
+            }
+
+            $log->raw_cell_value = $resolved['outlet_code'] ?? ($rawValue ?: '-');
+            $log->is_present = $resolved['is_present'] || ($customOverride !== null && $customOverride > 0);
             $log->matched_outlet_codes = $resolved['matched_codes'];
             $log->chosen_outlet_id = $resolved['chosen_outlet_id'];
             $log->outlet_code = $resolved['outlet_code'];
+            $log->custom_nominal_override = $log->is_present ? $customOverride : null;
+            $log->is_manual_override = true;
             $log->save();
+
+            // Optionally update Bank Data Bulanan
+            if ($updateBankData) {
+                $dt = Carbon::parse($dateStr);
+                $period = MonthlyDataPeriod::firstOrCreate(
+                    ['year' => $dt->year, 'month' => $dt->month],
+                    ['has_presensi' => true, 'has_omzet' => false]
+                );
+                BankPresensiDaily::updateOrCreate(
+                    [
+                        'work_date' => $dateStr,
+                        'spg_id' => $record->spg_id,
+                    ],
+                    [
+                        'period_id' => $period->id,
+                        'day_number' => $dt->day,
+                        'outlet_id' => $log->chosen_outlet_id,
+                        'raw_outlet_text' => $log->outlet_code,
+                    ]
+                );
+            }
 
             $this->salaryCalc->calculateRecord($record, true);
 
@@ -303,29 +328,93 @@ class TaskController extends Controller
         } else {
             $record = IncentiveRecord::where('payroll_task_id', $task->id)->findOrFail($recordId);
             $log = IncentiveDailyLog::where('incentive_record_id', $record->id)
-                ->where('date', $dateStr)
+                ->whereDate('date', $dateStr)
                 ->firstOrFail();
 
-            if ($request->has('omzet_amk')) {
-                $log->omzet_amk = (float)$request->input('omzet_amk');
-            }
-            if ($request->has('omzet_amkopi')) {
-                $log->omzet_amkopi = (float)$request->input('omzet_amkopi');
-            }
-            if ($request->has('total_daily_omzet')) {
-                $total = (float)$request->input('total_daily_omzet');
-                $log->omzet_amk = $total;
-                $log->omzet_amkopi = 0;
-            }
+            $outletChanged = false;
             if ($request->has('outlet_code')) {
                 $code = strtoupper(trim((string)$request->input('outlet_code')));
-                $out = Outlet::where('outlet_code', $code)->first();
-                $log->outlet_id = $out ? $out->id : null;
-                $log->outlet_code = $code;
+                if ($code === '' || $code === '-' || $code === 'OFF') {
+                    $log->outlet_id = null;
+                    $log->outlet_code = null;
+                    $outletChanged = true;
+                } else {
+                    $out = Outlet::whereRaw('UPPER(outlet_code) = ?', [$code])->first();
+                    if ($out) {
+                        if ($log->outlet_id !== $out->id) {
+                            $outletChanged = true;
+                        }
+                        $log->outlet_id = $out->id;
+                        $log->outlet_code = $out->outlet_code;
+                    }
+                }
             }
 
+            // If user clicked "Pull Outlet Omzet from Bank Data" or changed outlet without custom omzet
+            if ($request->boolean('pull_outlet_omzet', false) && $log->outlet_id) {
+                $bankOmzet = BankOmzetDaily::whereDate('omzet_date', $dateStr)
+                    ->where('outlet_id', $log->outlet_id)
+                    ->first();
+                $log->omzet_amk = $bankOmzet ? (float)$bankOmzet->omzet_amk : 0.0;
+                $log->omzet_amkopi = $bankOmzet ? (float)$bankOmzet->omzet_amkopi : 0.0;
+            } elseif (!$log->outlet_id && $outletChanged && !$request->has('omzet_amk')) {
+                $log->omzet_amk = 0.0;
+                $log->omzet_amkopi = 0.0;
+            } else {
+                if ($request->has('omzet_amk')) {
+                    $log->omzet_amk = max(0.0, (float)$request->input('omzet_amk'));
+                }
+                if ($request->has('omzet_amkopi')) {
+                    $log->omzet_amkopi = max(0.0, (float)$request->input('omzet_amkopi'));
+                }
+                if ($request->has('total_daily_omzet') && !$request->has('omzet_amk')) {
+                    $total = max(0.0, (float)$request->input('total_daily_omzet'));
+                    $log->omzet_amk = $total;
+                    $log->omzet_amkopi = 0.0;
+                }
+            }
+
+            $log->raw_outlet_amk = $log->omzet_amk;
+            $log->raw_outlet_kopi = $log->omzet_amkopi;
             $log->total_daily_omzet = $log->omzet_amk + $log->omzet_amkopi;
+            $log->is_manual_override = true;
             $log->save();
+
+            // Optionally update Bank Data Bulanan
+            if ($updateBankData) {
+                $dt = Carbon::parse($dateStr);
+                $period = MonthlyDataPeriod::firstOrCreate(
+                    ['year' => $dt->year, 'month' => $dt->month],
+                    ['has_presensi' => true, 'has_omzet' => true]
+                );
+                BankPresensiDaily::updateOrCreate(
+                    [
+                        'work_date' => $dateStr,
+                        'spg_id' => $record->spg_id,
+                    ],
+                    [
+                        'period_id' => $period->id,
+                        'day_number' => $dt->day,
+                        'outlet_id' => $log->outlet_id,
+                        'raw_outlet_text' => $log->outlet_code,
+                    ]
+                );
+                if ($log->outlet_id) {
+                    BankOmzetDaily::updateOrCreate(
+                        [
+                            'omzet_date' => $dateStr,
+                            'outlet_id' => $log->outlet_id,
+                        ],
+                        [
+                            'period_id' => $period->id,
+                            'day_number' => $dt->day,
+                            'omzet_amk' => $log->omzet_amk,
+                            'omzet_amkopi' => $log->omzet_amkopi,
+                            'total_omzet' => $log->total_daily_omzet,
+                        ]
+                    );
+                }
+            }
 
             $this->incentiveCalc->calculateRecord($record, null, true);
 
@@ -370,10 +459,19 @@ class TaskController extends Controller
         $multiplier = (int)$request->input('multiplier');
         $note = $request->input('note');
 
-        $multModel = TaskDateMultiplier::updateOrCreate(
-            ['payroll_task_id' => $task->id, 'date' => $dateStr],
-            ['multiplier' => $multiplier, 'note' => $note]
-        );
+        $multModel = TaskDateMultiplier::where('payroll_task_id', $task->id)
+            ->whereDate('date', $dateStr)
+            ->first();
+        if ($multModel) {
+            $multModel->update(['multiplier' => $multiplier, 'note' => $note]);
+        } else {
+            $multModel = TaskDateMultiplier::create([
+                'payroll_task_id' => $task->id,
+                'date' => $dateStr,
+                'multiplier' => $multiplier,
+                'note' => $note,
+            ]);
+        }
 
         foreach ($task->salaryRecords as $rec) {
             $this->salaryCalc->calculateRecord($rec, true);
@@ -397,10 +495,20 @@ class TaskController extends Controller
         $dates = $task->getDatesList();
         foreach ($dates as $d) {
             if ($d->isSunday()) {
-                TaskDateMultiplier::updateOrCreate(
-                    ['payroll_task_id' => $task->id, 'date' => $d->format('Y-m-d')],
-                    ['multiplier' => 2, 'note' => 'BESAR']
-                );
+                $dStr = $d->format('Y-m-d');
+                $multModel = TaskDateMultiplier::where('payroll_task_id', $task->id)
+                    ->whereDate('date', $dStr)
+                    ->first();
+                if ($multModel) {
+                    $multModel->update(['multiplier' => 2, 'note' => 'BESAR']);
+                } else {
+                    TaskDateMultiplier::create([
+                        'payroll_task_id' => $task->id,
+                        'date' => $dStr,
+                        'multiplier' => 2,
+                        'note' => 'BESAR',
+                    ]);
+                }
             }
         }
 
@@ -492,7 +600,61 @@ class TaskController extends Controller
     }
 
     /**
-     * Toggle Mode Omzet Outlet Kembar (Split vs Full).
+     * Clear / Reset all uploaded daily data inside a specific Task (keeps the task shell & resets cells to 0/OFF).
+     */
+    public function clearTaskData(PayrollTask $task)
+    {
+        if ($task->isFinished()) {
+            return back()->with('error', 'Task sudah FINISHED dan terkunci. Buka kembali task terlebih dahulu.');
+        }
+
+        if ($task->isSalary()) {
+            foreach ($task->salaryRecords as $rec) {
+                SalaryDailyLog::where('salary_record_id', $rec->id)->update([
+                    'raw_cell_value' => '-',
+                    'is_present' => false,
+                    'matched_outlet_codes' => json_encode([]),
+                    'chosen_outlet_id' => null,
+                    'outlet_code' => null,
+                    'daily_uang_makan_utama' => 0,
+                    'daily_uang_makan_tambahan' => 0,
+                    'custom_nominal_override' => null,
+                    'is_manual_override' => false,
+                ]);
+                $rec->update([
+                    'reference_outlet_id' => null,
+                    'policy_100_percent_override' => false,
+                    'uang_tambahan' => 0,
+                ]);
+                $this->salaryCalc->calculateRecord($rec->fresh(), true);
+            }
+        } else {
+            $settings = IncentiveSetting::current();
+            foreach ($task->incentiveRecords as $rec) {
+                IncentiveDailyLog::where('incentive_record_id', $rec->id)->update([
+                    'outlet_id' => null,
+                    'outlet_code' => null,
+                    'raw_outlet_amk' => 0,
+                    'raw_outlet_kopi' => 0,
+                    'omzet_amk' => 0,
+                    'omzet_amkopi' => 0,
+                    'total_daily_omzet' => 0,
+                    'is_manual_override' => false,
+                ]);
+                $rec->update([
+                    'reference_outlet_id' => null,
+                    'uang_tambahan' => 0,
+                ]);
+                $this->incentiveCalc->calculateRecord($rec->fresh(), $settings, true);
+            }
+        }
+
+        return redirect()->route('tasks.show', $task->id)
+            ->with('success', 'Seluruh data presensi & omzet pada task ini berhasil dihapus dan di-reset ke nol!');
+    }
+
+    /**
+     * Toggle Mode Omzet Outlet Kembar (Full 100% vs Split).
      */
     public function toggleTwinOutletMode(Request $request, PayrollTask $task)
     {
@@ -562,19 +724,22 @@ class TaskController extends Controller
             return response()->json([
                 'success' => true,
                 'twin_outlet_mode' => $mode,
-                'label' => ($mode === 'full' ? 'Full per SPG' : 'Bagi Rata')
+                'label' => ($mode === 'full' ? 'Full per SPG (100%)' : 'Bagi Rata')
             ]);
         }
 
-        return redirect()->route('tasks.show', $task->id)->with('success', 'Mode Omzet Outlet Kembar berhasil diubah menjadi: ' . ($mode === 'full' ? 'Full per SPG' : 'Bagi Rata Jumlah SPG Jaga'));
+        return redirect()->route('tasks.show', $task->id)->with('success', 'Mode Omzet Outlet Kembar berhasil diubah menjadi: ' . ($mode === 'full' ? 'Full per SPG (100%)' : 'Bagi Rata Jumlah SPG Jaga'));
     }
 
     /**
      * Build Verification Grid (Per Tanggal Per Outlet View).
+     * Also incorporates BankOmzetDaily so outlets without SPGs (like R-1) show their full daily omzet.
      */
     protected function buildVerificationGrid(PayrollTask $task, $allOutlets, array $dates): array
     {
         $grid = [];
+        $startStr = $task->start_date->format('Y-m-d');
+        $endStr = $task->end_date->format('Y-m-d');
 
         if ($task->isSalary()) {
             $records = $task->salaryRecords()->with(['spg', 'dailyLogs.chosenOutlet'])->get();
@@ -593,7 +758,7 @@ class TaskController extends Controller
                         $log = $r->dailyLogs->first(fn($l) => $l->date->format('Y-m-d') === $ymd);
                         if ($log && $log->is_present && ($log->outlet_code === $outCode || $log->chosen_outlet_id === $outlet->id)) {
                             $spgs[] = $r->spg->spg_name;
-                            $dailyUangMakan += ((float)$log->daily_uang_makan_utama + (float)$log->daily_uang_makan_tambahan);
+                            $dailyUangMakan += $log->nominal_uang_makan;
                         }
                     }
 
@@ -621,6 +786,14 @@ class TaskController extends Controller
             }
         } else {
             $records = $task->incentiveRecords()->with(['spg', 'dailyLogs'])->get();
+            $bankOmzets = BankOmzetDaily::whereDate('omzet_date', '>=', $startStr)
+                ->whereDate('omzet_date', '<=', $endStr)
+                ->get();
+            $bankOmzetMap = []; // [outlet_id][Y-m-d] => BankOmzetDaily
+            foreach ($bankOmzets as $bo) {
+                $bankOmzetMap[$bo->outlet_id][substr((string)$bo->omzet_date, 0, 10)] = $bo;
+            }
+
             foreach ($allOutlets as $outlet) {
                 $outCode = $outlet->outlet_code;
                 $hasAnyActivity = false;
@@ -637,9 +810,19 @@ class TaskController extends Controller
                         $log = $r->dailyLogs->first(fn($l) => $l->date->format('Y-m-d') === $ymd);
                         if ($log && ($log->outlet_code === $outCode || $log->outlet_id === $outlet->id)) {
                             $spgs[] = $r->spg->spg_name;
-                            $totalAmk += (float)$log->omzet_amk;
-                            $totalKopi += (float)$log->omzet_amkopi;
+                            // Outlet's own raw revenue (not multiplied by guard count)
+                            if ($totalAmk == 0.0 && $totalKopi == 0.0) {
+                                $totalAmk = (float)($log->raw_outlet_amk > 0 ? $log->raw_outlet_amk : $log->omzet_amk);
+                                $totalKopi = (float)($log->raw_outlet_kopi > 0 ? $log->raw_outlet_kopi : $log->omzet_amkopi);
+                            }
                         }
+                    }
+
+                    // If no SPG was on duty (e.g. R-1), pull outlet revenue from BankOmzetDaily
+                    if ($totalAmk == 0.0 && $totalKopi == 0.0 && isset($bankOmzetMap[$outlet->id][$ymd])) {
+                        $bo = $bankOmzetMap[$outlet->id][$ymd];
+                        $totalAmk = (float)$bo->omzet_amk;
+                        $totalKopi = (float)$bo->omzet_amkopi;
                     }
 
                     $totalOmzet = $totalAmk + $totalKopi;
@@ -653,7 +836,7 @@ class TaskController extends Controller
                     if ($totalOmzet > 0 && $spgCount > 0) {
                         $status = 'ok';
                     } elseif ($totalOmzet > 0 && $spgCount === 0) {
-                        $status = 'no_spg'; // Alert: Omzet without SPG
+                        $status = 'no_spg'; // Alert: Omzet without SPG (e.g. R-1)
                     } elseif ($totalOmzet === 0.0 && $spgCount > 0) {
                         $status = 'no_omzet'; // SPG on duty but 0 omzet
                     }

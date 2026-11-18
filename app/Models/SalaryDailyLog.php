@@ -21,6 +21,8 @@ class SalaryDailyLog extends Model
         'multiplier',
         'daily_uang_makan_utama',
         'daily_uang_makan_tambahan',
+        'custom_nominal_override',
+        'is_manual_override',
     ];
 
     protected $casts = [
@@ -30,10 +32,15 @@ class SalaryDailyLog extends Model
         'multiplier' => 'integer',
         'daily_uang_makan_utama' => 'float',
         'daily_uang_makan_tambahan' => 'float',
+        'custom_nominal_override' => 'float',
+        'is_manual_override' => 'boolean',
     ];
 
     public function getNominalUangMakanAttribute(): float
     {
+        if ($this->custom_nominal_override !== null) {
+            return (float)$this->custom_nominal_override;
+        }
         return (float)($this->daily_uang_makan_utama + $this->daily_uang_makan_tambahan);
     }
 

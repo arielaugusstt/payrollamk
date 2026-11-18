@@ -35,6 +35,21 @@
         </div>
 
         <div class="flex flex-wrap items-center gap-2">
+            <!-- Re-Sync from Bank Data Trigger -->
+            @if (!$task->isFinished())
+                <form action="{{ route('tasks.resync_bank_data', $task->id) }}" method="POST" class="inline-flex items-center gap-1.5 bg-purple-50 border border-purple-200 px-2.5 py-1.5 rounded-xl">
+                    @csrf
+                    <label class="inline-flex items-center gap-1 text-[11px] text-purple-800 font-medium cursor-pointer select-none" title="Jangan timpa sel yang sudah diedit manual">
+                        <input type="checkbox" name="preserve_manual_overrides" value="1" checked class="rounded border-purple-300 text-purple-600 focus:ring-purple-500 w-3.5 h-3.5">
+                        <span>Keep Manual</span>
+                    </label>
+                    <button type="submit" class="px-2.5 py-1 bg-purple-600 hover:bg-purple-700 text-white rounded-lg text-xs font-bold flex items-center gap-1 transition cursor-pointer">
+                        <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
+                        Re-Sync Bank Data
+                    </button>
+                </form>
+            @endif
+
             <!-- Upload Excel Trigger -->
             <button @click="uploadModalOpen = true" 
                     class="px-3 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-semibold flex items-center gap-1.5 transition cursor-pointer">
@@ -43,6 +58,17 @@
                 </svg>
                 Upload Excel (Presensi & Omzet)
             </button>
+
+            <!-- Delete / Reset Uploaded Task Data Trigger (2x Confirmation) -->
+            @if (!$task->isFinished())
+                <button type="button"
+                        @click="clearDataModal.step = 1; clearDataModal.open = true"
+                        class="px-3 py-2 bg-red-50 hover:bg-red-100 text-red-700 border border-red-200 rounded-xl text-xs font-semibold flex items-center gap-1.5 transition cursor-pointer"
+                        title="Hapus & kosongkan seluruh data presensi & omzet pada task ini">
+                    <svg class="w-4 h-4 text-red-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg>
+                    Hapus Data Upload
+                </button>
+            @endif
 
             <!-- Export to Excel (.xlsx) -->
             <a href="{{ route('export.incentive', $task->id) }}" 
@@ -77,6 +103,29 @@
             @endif
         </div>
     </div>
+
+    <!-- Pre-Flight Bank Data Readiness Bar -->
+    @if(isset($bankReadiness))
+        <div class="bg-white px-4 py-3 rounded-2xl border {{ $bankReadiness['is_ready'] ? 'border-emerald-200' : 'border-amber-300 bg-amber-50/40' }} shadow-2xs flex flex-wrap items-center justify-between gap-3 text-xs">
+            <div class="flex items-center gap-2.5 flex-wrap">
+                <span class="font-bold text-slate-700 flex items-center gap-1.5">
+                    <svg class="w-4 h-4 text-purple-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 7v10c0 2.21 3.582 4 8 4s8-1.79 8-4V7M4 7c0 2.21 3.582 4 8 4s8-1.79 8-4M4 7c0-2.21 3.582-4 8-4s8 1.79 8 4"/></svg>
+                    Sumber Bank Data Bulanan:
+                </span>
+                @foreach($bankReadiness['required_periods'] as $reqP)
+                    <a href="{{ route('bank-data.index', ['year' => $reqP['year'], 'month' => $reqP['month'], 'tab' => strtolower($reqP['type'])]) }}"
+                       class="px-2.5 py-1 rounded-lg font-semibold border flex items-center gap-1.5 transition {{ $reqP['is_ready'] ? 'bg-emerald-50 text-emerald-700 border-emerald-200 hover:bg-emerald-100' : 'bg-red-100 text-red-800 border-red-300 hover:bg-red-200 animate-pulse' }}">
+                        <span>{{ $reqP['is_ready'] ? '✓ Tersedia:' : '⚠ Belum Upload:' }}</span>
+                        <span>{{ $reqP['label'] }}</span>
+                    </a>
+                @endforeach
+            </div>
+            <a href="{{ route('bank-data.index') }}" class="text-purple-600 hover:text-purple-700 font-bold hover:underline flex items-center gap-1">
+                <span>Kelola Bank Data Bulanan</span>
+                <span>&rarr;</span>
+            </a>
+        </div>
+    @endif
 
     <!-- Mode Omzet Outlet Kembar (1-Click Toggle) -->
     <div class="bg-slate-900 text-white p-3.5 rounded-2xl shadow-sm flex flex-col sm:flex-row items-center justify-between gap-3 text-xs">
@@ -124,25 +173,39 @@
         </div>
     </div>
 
-    <!-- Workspace Tabs Navigation -->
-    <div class="flex items-center gap-2 border-b border-slate-200 pb-2">
-        <button type="button"
-                @click="activeTab = 'spg_matrix'"
-                :class="activeTab === 'spg_matrix' ? 'bg-emerald-600 text-white font-bold shadow-sm' : 'bg-white text-slate-600 hover:bg-slate-100 border border-slate-200'"
-                class="px-4 py-2 rounded-xl text-xs flex items-center gap-2 transition cursor-pointer">
-            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z"/></svg>
-            <span>Matriks Insentif SPG (Per SPG)</span>
-            <span class="px-1.5 py-0.2 rounded-full text-[10px] bg-white/20 text-white font-mono">{{ $task->incentiveRecords->count() }}</span>
-        </button>
+    <!-- Workspace Tabs Navigation & Filters -->
+    <div class="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 pb-2">
+        <div class="flex items-center gap-2">
+            <button type="button"
+                    @click="activeTab = 'spg_matrix'"
+                    :class="activeTab === 'spg_matrix' ? 'bg-emerald-600 text-white font-bold shadow-sm' : 'bg-white text-slate-600 hover:bg-slate-100 border border-slate-200'"
+                    class="px-4 py-2 rounded-xl text-xs flex items-center gap-2 transition cursor-pointer">
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z"/></svg>
+                <span>Matriks Insentif SPG (Per SPG)</span>
+                <span class="px-1.5 py-0.2 rounded-full text-[10px] bg-white/20 text-white font-mono">{{ $task->incentiveRecords->count() }}</span>
+            </button>
 
-        <button type="button"
-                @click="activeTab = 'outlet_verification'"
-                :class="activeTab === 'outlet_verification' ? 'bg-indigo-600 text-white font-bold shadow-sm' : 'bg-white text-slate-600 hover:bg-slate-100 border border-slate-200'"
-                class="px-4 py-2 rounded-xl text-xs flex items-center gap-2 transition cursor-pointer">
-            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4"/></svg>
-            <span>Verifikasi Outlet (Per Tanggal Per Outlet)</span>
-            <span class="px-1.5 py-0.2 rounded-full text-[10px] bg-white/20 text-white font-mono">{{ count($verificationGrid) }}</span>
-        </button>
+            <button type="button"
+                    @click="activeTab = 'outlet_verification'"
+                    :class="activeTab === 'outlet_verification' ? 'bg-indigo-600 text-white font-bold shadow-sm' : 'bg-white text-slate-600 hover:bg-slate-100 border border-slate-200'"
+                    class="px-4 py-2 rounded-xl text-xs flex items-center gap-2 transition cursor-pointer">
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4"/></svg>
+                <span>Verifikasi Outlet (Per Tanggal Per Outlet)</span>
+                <span class="px-1.5 py-0.2 rounded-full text-[10px] bg-white/20 text-white font-mono">{{ count($verificationGrid) }}</span>
+            </button>
+        </div>
+
+        <div class="flex items-center gap-3">
+            <!-- Toggle Hide 0-Attendance SPGs -->
+            <label class="inline-flex items-center gap-2 cursor-pointer select-none bg-white px-3 py-1.5 rounded-xl border border-slate-200 text-xs font-semibold text-slate-700 shadow-2xs">
+                <input type="checkbox" x-model="hideZeroAttendance" class="rounded border-slate-300 text-emerald-600 focus:ring-emerald-500">
+                <span>Hide 0-Attendance SPGs</span>
+            </label>
+
+            <!-- Search SPG / Outlet -->
+            <input type="text" x-model="searchFilter" placeholder="Cari SPG / Outlet..."
+                   class="w-44 rounded-xl border-slate-200 bg-white text-xs py-1.5 px-3 focus:ring-emerald-500 focus:border-emerald-500">
+        </div>
     </div>
 
     <!-- TAB 1: Matriks Insentif SPG (Per SPG) -->
@@ -208,8 +271,10 @@
                     @foreach ($task->incentiveRecords as $rec)
                         @php
                             $logsMap = $rec->dailyLogs->keyBy(fn($l) => $l->date->format('Y-m-d'));
+                            $activeDaysCount = $rec->dailyLogs->filter(fn($l) => !empty($l->outlet_code) || (float)$l->total_daily_omzet > 0)->count();
                         @endphp
-                        <tr class="hover:bg-slate-50/80 transition-colors group" id="row-record-{{ $rec->id }}">
+                        <tr x-show="shouldShowRow('{{ strtolower($rec->spg->spg_name) }}', {{ $rec->id }}, {{ $activeDaysCount }})"
+                            class="hover:bg-slate-50/80 transition-colors group" id="row-record-{{ $rec->id }}">
                             
                             <!-- Pinned Left 1: No -->
                             <td class="sticky left-0 z-20 bg-white group-hover:bg-slate-50 px-3 py-2 text-center text-slate-400 font-medium border-r border-slate-200">
@@ -241,7 +306,7 @@
                                 @endif
                             </td>
 
-                            <!-- Date Cells (Shows: Outlet Code + Total Daily Omzet) -->
+                            <!-- Date Cells (Shows: Outlet Code + Total Daily Omzet, Clickable for Inline Edit) -->
                             @foreach ($dates as $d)
                                 @php
                                     $ymd = $d->format('Y-m-d');
@@ -252,14 +317,21 @@
                                     $kopi = $log ? (float)$log->omzet_amkopi : 0;
                                 @endphp
                                 <td class="px-1 py-1 text-center border-r border-slate-100">
-                                    <div class="flex flex-col items-center justify-center p-1 rounded {{ $val > 0 ? 'bg-emerald-50/70 border border-emerald-100' : '' }}"
-                                         title="Tanggal {{ $d->format('d/m') }} | Outlet: {{ $outCode }} | AMK: Rp {{ number_format($amk, 0, ',', '.') }} | Kopi: Rp {{ number_format($kopi, 0, ',', '.') }}">
-                                        @if ($outCode !== '-')
-                                            <span class="text-[9px] font-mono font-extrabold text-slate-700 bg-white/90 px-1 rounded shadow-2xs border border-slate-200">
-                                                {{ $outCode }}
-                                            </span>
-                                        @endif
-                                        <span class="font-mono text-[10px] {{ $val > 0 ? 'text-emerald-800 font-bold' : 'text-slate-300' }}">
+                                    <div id="inc-cell-box-{{ $rec->id }}-{{ $ymd }}"
+                                         data-outlet-code="{{ $outCode }}"
+                                         data-amk="{{ (int)$amk }}"
+                                         data-kopi="{{ (int)$kopi }}"
+                                         @if(!$task->isFinished())
+                                             @click="openCellModal({{ $rec->id }}, '{{ $rec->spg->spg_name }}', '{{ $ymd }}', '{{ $d->format('d M Y') }}')"
+                                         @endif
+                                         class="flex flex-col items-center justify-center p-1 rounded {{ !$task->isFinished() ? 'cursor-pointer hover:ring-1 hover:ring-emerald-400' : '' }} {{ $val > 0 ? 'bg-emerald-50/70 border border-emerald-100' : '' }}"
+                                         title="Klik untuk edit sel | Tanggal {{ $d->format('d/m') }} | Outlet: {{ $outCode }} | AMK: Rp {{ number_format($amk, 0, ',', '.') }} | Kopi: Rp {{ number_format($kopi, 0, ',', '.') }}">
+                                        <span id="inc-cell-code-{{ $rec->id }}-{{ $ymd }}"
+                                              class="text-[9px] font-mono font-extrabold text-slate-700 bg-white/90 px-1 rounded shadow-2xs border border-slate-200 {{ $outCode === '-' ? 'hidden' : '' }}">
+                                            {{ $outCode }}
+                                        </span>
+                                        <span id="inc-cell-val-{{ $rec->id }}-{{ $ymd }}"
+                                              class="font-mono text-[10px] {{ $val > 0 ? 'text-emerald-800 font-bold' : 'text-slate-300' }}">
                                             {{ $val > 0 ? number_format($val, 0, ',', '.') : '-' }}
                                         </span>
                                     </div>
@@ -543,6 +615,112 @@
         </div>
     </div>
 
+    <!-- Inline Cell Edit Popover Modal (Outlet Code + Omzet AMK + Omzet AMKopi + Update Bank Data) -->
+    <div x-show="cellModal.open"
+         x-cloak
+         class="fixed inset-0 z-50 overflow-y-auto bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
+        <div @click.outside="cellModal.open = false"
+             class="bg-white rounded-3xl max-w-md w-full p-6 shadow-2xl border border-slate-100 relative">
+            <div class="flex items-center justify-between pb-3 border-b border-slate-100 mb-4">
+                <div>
+                    <h3 class="text-sm font-bold text-slate-900">Edit Sel Harian Insentif (Omzet)</h3>
+                    <p class="text-xs text-slate-500">SPG: <strong x-text="cellModal.spgName"></strong> &bull; Tanggal: <strong x-text="cellModal.dateFormatted"></strong></p>
+                </div>
+                <button @click="cellModal.open = false" class="text-slate-400 hover:text-slate-600 text-xl font-bold">&times;</button>
+            </div>
+
+            <div class="space-y-3.5">
+                <div>
+                    <label class="block text-xs font-semibold text-slate-700 mb-1">Kode Outlet Jaga (atau OFF `-`):</label>
+                    <select x-model="cellModal.outletCode" class="w-full rounded-xl border-slate-300 text-xs font-semibold py-2 px-3 focus:ring-emerald-500 focus:border-emerald-500">
+                        <option value="-">-- OFF / LIBUR (-) --</option>
+                        @foreach ($allOutlets as $o)
+                            <option value="{{ $o->outlet_code }}">{{ $o->outlet_code }} — {{ $o->outlet_name }}</option>
+                        @endforeach
+                    </select>
+                </div>
+
+                <label class="flex items-center gap-2 p-2.5 rounded-xl bg-blue-50/70 border border-blue-200 cursor-pointer select-none">
+                    <input type="checkbox" x-model="cellModal.pullOutletOmzet" class="rounded border-blue-300 text-blue-600 focus:ring-blue-500">
+                    <span class="text-[11px] font-semibold text-blue-900">Tarik otomatis Omzet Outlet terpilih dari Bank Data Bulanan</span>
+                </label>
+
+                <div x-show="!cellModal.pullOutletOmzet" class="grid grid-cols-2 gap-3">
+                    <div>
+                        <label class="block text-xs font-semibold text-slate-700 mb-1">Omzet AMK (Rp):</label>
+                        <input type="number" step="100" min="0" x-model="cellModal.amk" class="w-full rounded-xl border-slate-300 text-xs py-2 px-3 focus:ring-emerald-500 focus:border-emerald-500">
+                    </div>
+                    <div>
+                        <label class="block text-xs font-semibold text-slate-700 mb-1">Omzet AMKopi (Rp):</label>
+                        <input type="number" step="100" min="0" x-model="cellModal.kopi" class="w-full rounded-xl border-slate-300 text-xs py-2 px-3 focus:ring-emerald-500 focus:border-emerald-500">
+                    </div>
+                </div>
+
+                <div x-show="!cellModal.pullOutletOmzet" class="p-2.5 rounded-xl bg-emerald-50 border border-emerald-200 flex items-center justify-between text-xs">
+                    <span class="font-semibold text-emerald-800">Total Omzet Harian:</span>
+                    <strong class="text-emerald-950 font-mono" x-text="'Rp ' + new Intl.NumberFormat('id-ID').format((Number(cellModal.amk)||0) + (Number(cellModal.kopi)||0))"></strong>
+                </div>
+
+                <label class="flex items-center gap-2 p-3 rounded-xl bg-purple-50/70 border border-purple-200 cursor-pointer select-none">
+                    <input type="checkbox" x-model="cellModal.updateBankData" class="rounded border-purple-300 text-purple-600 focus:ring-purple-500">
+                    <div class="text-xs">
+                        <span class="font-bold text-purple-900">Update Bank Data Bulanan juga</span>
+                        <span class="block text-[10px] text-purple-700">Simpan perubahan presensi &amp; omzet tanggal ini ke kalender Bank Data</span>
+                    </div>
+                </label>
+            </div>
+
+            <div class="flex justify-end gap-2 pt-4 mt-4 border-t border-slate-100">
+                <button type="button" @click="cellModal.open = false" class="px-4 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-100 rounded-xl">Batal</button>
+                <button type="button" @click="saveCellModal()" class="px-5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold shadow-md shadow-emerald-600/20">
+                    Simpan Perubahan Sel
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 2-Step Confirmation Modal for Clearing Task Data -->
+    <div x-show="clearDataModal.open" x-cloak class="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 backdrop-blur-xs p-4">
+        <div @click.outside="clearDataModal.open = false" class="bg-white rounded-3xl shadow-2xl border border-slate-200 w-full max-w-md p-6">
+            <div x-show="clearDataModal.step === 1">
+                <div class="flex items-center gap-3 pb-3 border-b border-slate-100">
+                    <div class="w-11 h-11 rounded-2xl bg-amber-100 text-amber-600 flex items-center justify-center text-xl shrink-0">⚠️</div>
+                    <div>
+                        <span class="px-2 py-0.5 rounded-full text-[10px] font-extrabold bg-amber-100 text-amber-800 border border-amber-300">PERINGATAN KONFIRMASI 1 DARI 2</span>
+                        <h3 class="text-base font-bold text-slate-900 mt-1">Kosongkan Data Presensi &amp; Omzet Task Ini?</h3>
+                    </div>
+                </div>
+                <div class="mt-4 p-3.5 rounded-2xl bg-amber-50 border border-amber-200 text-xs text-amber-900 space-y-1.5">
+                    <p class="font-semibold">Anda akan menghapus seluruh data presensi &amp; omzet harian yang sudah diupload pada task <strong>{{ $task->title }}</strong>.</p>
+                    <p class="text-amber-700">Apakah Anda yakin ingin melanjutkan ke konfirmasi tahap kedua?</p>
+                </div>
+                <div class="mt-6 flex items-center justify-end gap-2">
+                    <button type="button" @click="clearDataModal.open = false" class="px-4 py-2 rounded-xl border border-slate-200 text-xs font-semibold text-slate-600 hover:bg-slate-50 cursor-pointer">Batal</button>
+                    <button type="button" @click="clearDataModal.step = 2" class="px-4 py-2 rounded-xl bg-amber-500 hover:bg-amber-600 text-white text-xs font-bold shadow-sm cursor-pointer">Ya, Lanjut Konfirmasi Kedua (1/2) &rarr;</button>
+                </div>
+            </div>
+
+            <div x-show="clearDataModal.step === 2" x-cloak>
+                <div class="flex items-center gap-3 pb-3 border-b border-red-100">
+                    <div class="w-11 h-11 rounded-2xl bg-red-100 text-red-600 flex items-center justify-center text-xl shrink-0 animate-bounce">🚨</div>
+                    <div>
+                        <span class="px-2 py-0.5 rounded-full text-[10px] font-extrabold bg-red-100 text-red-800 border border-red-300">PERINGATAN TERAKHIR 2 DARI 2</span>
+                        <h3 class="text-base font-bold text-red-700 mt-1">Konfirmasi Penghapusan Data Task</h3>
+                    </div>
+                </div>
+                <div class="mt-4 p-3.5 rounded-2xl bg-red-50 border-2 border-red-300 text-xs text-red-900 space-y-1.5">
+                    <p class="font-bold text-red-800">PERHATIAN: Seluruh sel tanggal dan omzet pada task ini akan di-reset ke Rp 0!</p>
+                </div>
+                <form method="POST" action="{{ route('tasks.clear_data', $task->id) }}" class="mt-6 flex items-center justify-between gap-2">
+                    @csrf
+                    @method('DELETE')
+                    <button type="button" @click="clearDataModal.open = false; clearDataModal.step = 1" class="px-4 py-2 rounded-xl border border-slate-200 text-xs font-semibold text-slate-600 hover:bg-slate-50 cursor-pointer">Batalkan</button>
+                    <button type="submit" class="px-4 py-2.5 rounded-xl bg-red-600 hover:bg-red-700 text-white text-xs font-extrabold shadow-md shadow-red-600/25 cursor-pointer">🗑️ YA, HAPUS DATA SEKARANG (2/2)</button>
+                </form>
+            </div>
+        </div>
+    </div>
+
 </div>
 @endsection
 
@@ -554,6 +732,119 @@ function incentiveMatrixWorkspace(config) {
         uploadModalOpen: false,
         currentTwinMode: config.twinMode,
         updatingTwinMode: false,
+        hideZeroAttendance: true,
+        searchFilter: '',
+        rowActiveMap: {},
+        clearDataModal: {
+            open: false,
+            step: 1
+        },
+        cellModal: {
+            open: false,
+            recordId: null,
+            spgName: '',
+            dateStr: '',
+            dateFormatted: '',
+            outletCode: '-',
+            amk: 0,
+            kopi: 0,
+            pullOutletOmzet: false,
+            updateBankData: false
+        },
+
+        shouldShowRow(spgNameLower, recordId, initialActiveDays) {
+            const activeDays = (this.rowActiveMap[recordId] !== undefined) ? this.rowActiveMap[recordId] : initialActiveDays;
+            if (this.hideZeroAttendance && activeDays <= 0) {
+                return false;
+            }
+            if (this.searchFilter.trim() !== '' && !spgNameLower.includes(this.searchFilter.trim().toLowerCase())) {
+                return false;
+            }
+            return true;
+        },
+
+        openCellModal(recordId, spgName, dateStr, dateFormatted) {
+            const box = document.getElementById(`inc-cell-box-${recordId}-${dateStr}`);
+            const code = box ? (box.dataset.outletCode || '-') : '-';
+            const amk = box ? (Number(box.dataset.amk) || 0) : 0;
+            const kopi = box ? (Number(box.dataset.kopi) || 0) : 0;
+
+            this.cellModal = {
+                open: true,
+                recordId,
+                spgName,
+                dateStr,
+                dateFormatted,
+                outletCode: code,
+                amk,
+                kopi,
+                pullOutletOmzet: false,
+                updateBankData: false
+            };
+        },
+
+        async saveCellModal() {
+            try {
+                const res = await fetch(`/tasks/${config.taskId}/cell`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'X-CSRF-TOKEN': config.csrfToken,
+                        'Accept': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        record_id: this.cellModal.recordId,
+                        date: this.cellModal.dateStr,
+                        outlet_code: this.cellModal.outletCode,
+                        omzet_amk: Number(this.cellModal.amk) || 0,
+                        omzet_amkopi: Number(this.cellModal.kopi) || 0,
+                        pull_outlet_omzet: this.cellModal.pullOutletOmzet,
+                        update_bank_data: this.cellModal.updateBankData
+                    })
+                });
+                const data = await res.json();
+                if (data.success) {
+                    this.updateCellDOM(this.cellModal.recordId, this.cellModal.dateStr, data.log);
+                    this.updateRowDOM(data.record);
+                    this.cellModal.open = false;
+                } else if (data.error) {
+                    alert(data.error);
+                }
+            } catch (err) {
+                console.error(err);
+            }
+        },
+
+        updateCellDOM(recordId, dateStr, log) {
+            const formatRp = (n) => new Intl.NumberFormat('id-ID').format(Math.round(n));
+            const box = document.getElementById(`inc-cell-box-${recordId}-${dateStr}`);
+            const codeEl = document.getElementById(`inc-cell-code-${recordId}-${dateStr}`);
+            const valEl = document.getElementById(`inc-cell-val-${recordId}-${dateStr}`);
+
+            const outCode = log.outlet_code || '-';
+            const amk = Number(log.omzet_amk) || 0;
+            const kopi = Number(log.omzet_amkopi) || 0;
+            const total = amk + kopi;
+
+            if (box) {
+                box.dataset.outletCode = outCode;
+                box.dataset.amk = amk;
+                box.dataset.kopi = kopi;
+                box.classList.toggle('bg-emerald-50/70', total > 0);
+                box.classList.toggle('border', total > 0);
+                box.classList.toggle('border-emerald-100', total > 0);
+            }
+            if (codeEl) {
+                codeEl.innerText = outCode;
+                codeEl.classList.toggle('hidden', outCode === '-');
+            }
+            if (valEl) {
+                valEl.innerText = total > 0 ? formatRp(total) : '-';
+                valEl.classList.toggle('text-emerald-800', total > 0);
+                valEl.classList.toggle('font-bold', total > 0);
+                valEl.classList.toggle('text-slate-300', total <= 0);
+            }
+        },
 
         async setTwinMode(mode) {
             if (this.currentTwinMode === mode || this.updatingTwinMode) return;

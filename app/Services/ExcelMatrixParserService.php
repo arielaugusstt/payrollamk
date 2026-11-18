@@ -92,30 +92,42 @@ class ExcelMatrixParserService
                 $omzetRowsData = $spreadsheet->getSheet(1)->toArray(null, true, true, true);
             }
         } else {
-            // Single sheet or CSV: Detect boundary between Presensi and Omzet
+            // Single sheet or CSV: Detect whether it's Presensi, Omzet, or combined
+            $firstSheetName = strtolower(trim($sheetNames[0] ?? ''));
             $allRows = $spreadsheet->getSheet(0)->toArray(null, true, true, true);
-            $omzetHeaderIdx = null;
-
-            foreach ($allRows as $rIdx => $rowCells) {
-                if ($rIdx <= 2) continue;
-                $numCount = 0;
-                $sampleCells = array_slice($rowCells, 1, 15);
-                foreach ($sampleCells as $cVal) {
-                    if ($cVal !== null && is_numeric(trim((string)$cVal))) {
-                        $numCount++;
-                    }
-                }
-                if ($numCount >= 8) {
-                    $omzetHeaderIdx = $rIdx;
-                    break;
+            $firstRow = reset($allRows) ?: [];
+            $firstRowNumericCount = 0;
+            foreach (array_slice($firstRow, 1, 15) as $cVal) {
+                if ($cVal !== null && is_numeric(trim((string)$cVal))) {
+                    $firstRowNumericCount++;
                 }
             }
 
-            if ($omzetHeaderIdx !== null) {
-                $presensiRowsData = array_slice($allRows, 0, $omzetHeaderIdx - 1, true);
-                $omzetRowsData = array_slice($allRows, $omzetHeaderIdx - 1, null, true);
+            if (str_contains($firstSheetName, 'omset') || str_contains($firstSheetName, 'omzet') || $firstRowNumericCount >= 8) {
+                $omzetRowsData = $allRows;
             } else {
-                $presensiRowsData = $allRows;
+                $omzetHeaderIdx = null;
+                foreach ($allRows as $rIdx => $rowCells) {
+                    if ($rIdx <= 2) continue;
+                    $numCount = 0;
+                    $sampleCells = array_slice($rowCells, 1, 15);
+                    foreach ($sampleCells as $cVal) {
+                        if ($cVal !== null && is_numeric(trim((string)$cVal))) {
+                            $numCount++;
+                        }
+                    }
+                    if ($numCount >= 8) {
+                        $omzetHeaderIdx = $rIdx;
+                        break;
+                    }
+                }
+
+                if ($omzetHeaderIdx !== null) {
+                    $presensiRowsData = array_slice($allRows, 0, $omzetHeaderIdx - 1, true);
+                    $omzetRowsData = array_slice($allRows, $omzetHeaderIdx - 1, null, true);
+                } else {
+                    $presensiRowsData = $allRows;
+                }
             }
         }
 
@@ -168,7 +180,7 @@ class ExcelMatrixParserService
             'sheet_names' => $sheetNames,
             'task_id' => $task->id,
             'task_type' => $task->task_type,
-            'twin_outlet_mode' => $task->twin_outlet_mode ?: 'split',
+            'twin_outlet_mode' => $task->twin_outlet_mode ?: 'full',
             'dates' => $dateHeaders,
             'anomalies' => $anomalies,
             'presensi_rows' => $mappedResult['salary_rows'],
@@ -267,13 +279,18 @@ class ExcelMatrixParserService
             }
         }
 
-        // Auto-Register / Sync SPGs into Master SPG table
+        // Auto-Register / Sync SPGs into Master SPG table (only if already in Master SPG or has > 0 attendance)
         $spgModels = []; // spgName => Spg model
         foreach ($validCols as $colKey => $spgName) {
             $lowerName = strtolower(trim($spgName));
             $spg = $spgMap[$lowerName] ?? null;
+            $attCount = $colAttendanceCount[$colKey] ?? 0;
 
             if (!$spg) {
+                if ($attCount === 0) {
+                    // Gracefully accept 0-attendance columns without polluting Master SPGs
+                    continue;
+                }
                 $cleanName = strtoupper(trim($spgName));
                 $spg = Spg::firstOrCreate(
                     ['spg_name' => $cleanName],
@@ -299,6 +316,9 @@ class ExcelMatrixParserService
         for ($d = 1; $d <= 31; $d++) {
             $outletGuardsMap[$d] = [];
             foreach ($validCols as $colKey => $spgName) {
+                if (!isset($spgModels[$spgName])) {
+                    continue;
+                }
                 $rawVal = $colDayCells[$colKey][$d] ?? '';
                 $resolvedOutlet = $this->resolveOutletString($rawVal, $outletsMap, $aliasMap, $allOutlets);
 
@@ -423,7 +443,7 @@ class ExcelMatrixParserService
         $omzetKopi = $omzetParsed['omzet_kopi'] ?? [];
 
         $multipliersMap = $task->dateMultipliers->keyBy(fn($m) => $m->date->format('Y-m-d'));
-        $twinOutletMode = $task->twin_outlet_mode ?: 'split';
+        $twinOutletMode = $task->twin_outlet_mode ?: 'full';
 
         $salaryRows = [];
         $incentiveRows = [];
